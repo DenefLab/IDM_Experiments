@@ -1,0 +1,1128 @@
+---
+title: 'Analysis of Invasive Dreissenid Mussel (IDM) laboratory feeding experiments that made use of Lake Michigan water sampled at the M45 station, 5 m above the lake floor on 7/2013, 8/2014, and 12/2014'
+output:
+  md_document:
+    toc: true
+    variant: markdown_github
+---
+    
+```{r global_options, include=FALSE}
+
+knitr::opts_chunk$set(
+  fig.width = 7, 
+  fig.height = 5, 
+  fig.align = 'center', 
+  fig.path = 'Figures/',
+  warning = FALSE, 
+  message = FALSE
+)
+
+```
+
+### Load Libraries
+```{r load_libs, include=FALSE}
+library(phyloseq)
+library(ggplot2)
+library(ape)
+library(vegan)
+library(plyr)
+library(dplyr)
+library(scales)
+library(grid)
+library(reshape2)
+library(DESeq2)
+library(pegas)
+library(pgirmess)
+library(multcomp)
+library(multcompView)
+
+theme_set(theme_bw())
+
+source("/Users/vdenef/Documents/UMich/Digital_Notebooks/GitHub/MicrobeMiseq/R/miseqR.R")
+
+setwd("/Users/vdenef/Documents/UMich/Digital_Notebooks/GitHub/IDM_Experiments/")
+```
+
+## Sequence data analysis
+```{r Import Data, include=FALSE}
+### loading mothur output with FWDB+silva taxonomy and sample metadata. Experiments run in Jul 2013, Aug 2014, Dec 2014. 2014 samples were run on same sequencing run in February 2016, while Aug 2013 was run on an earlier MiSeq run, all according to same chemistry and protocol at the UM microbiome core. Two miseq runs were performed for the 2014 samples using the same libraries, as the initial run resulted in lower than normal read counts (low cluster density). Both of these runs were combined in the mothur analysis. Also loading DOE JGI-generated data from a July 2013 Lake Michigan field survey. While not included in the analyses below (part of a different study, and mothur analysis was run on all data combined to allow use of same OTUs across samples), the mothur output includes surface water samples from inland lakes collected in June 2014 (collected as part of Water Center project looking at impact zebra mussels in inland lakes).
+sharedfile <- "Input_data/QMexp_IL_LM.contigs.good.unique.good.filter.unique.precluster.pick.pick.an.unique_list.shared"
+taxfile <- "Input_data/QMexp_IL_LM.contigs.good.unique.good.filter.unique.precluster.pick.pick.an.unique_list.0.03.cons.taxonomy"
+mothurdata <- import_mothur(mothur_shared_file = sharedfile ,mothur_constaxonomy_file = taxfile )
+sampledata <- read.table("Input_data/QMexp_IL_LM_womockblanks.tsv",sep="\t",header=T,row.names=1,as.is=T)
+SAMPLE = sample_data(sampledata)
+
+### create phyloseq object
+physeq.all = merge_phyloseq(mothurdata, SAMPLE)
+
+### We need to change the taxonomy names: when using the fwdb taxonomy we need to add different headers after removing the last column, which contains no information except for 1 Verrucomicrobia taxon
+tax_table(physeq.all) <- tax_table(physeq.all)[,-8] # this removes the final column
+tax_table(physeq.all) <- cbind(tax_table(physeq.all),row.names(tax_table(physeq.all)))
+colnames(tax_table(physeq.all)) <- c("Kingdom","Phylum","Class","Order","Family","Genus","Tribe","Species")
+
+### removing non-bacterial reads (was already done in mothur, but just to be safe after merging taxonomies)
+physeq.all <- subset_taxa(physeq.all, Kingdom == "Bacteria")
+
+```
+
+```{r Proteobacteria phylum change to class}
+
+### ADD THE PROTEOBACTERIA CLASSES TO THE PHYLA NAME FIELD IN PHYLOSEQ OBJECT TAXONOMY 
+phy <- data.frame(tax_table(physeq.all))
+Phylum <- as.character(phy$Phylum)
+Class <- as.character(phy$Class)
+
+for  (i in 1:length(Phylum)){ 
+  if (Phylum[i] == "Proteobacteria"){
+    if (Class[i] == "unclassified"){
+      Phylum[i] <- Phylum[i]       
+    } else {
+      Phylum[i] <- Class[i]
+    }
+  } 
+}
+
+phy$Phylum <- Phylum
+t <- tax_table(as.matrix(phy))
+
+tax_table(physeq.all) <- t
+
+### generating separate phyloseq objects with subsets of the data
+physeq_qmexp <- subset_samples(physeq.all, Group == "Experiment")
+physeq_lm <- subset_samples(physeq.all, Group == "Field.LM")
+
+```
+
+
+### Fig 1 (PCoA) + PERMANOVA and AMOVA of mussel experiments + Fig. 2 + Fig. S1 (DEseq analysis and explanation based on differential abundance in PA/FL fractions, visualized using either taxonomy of functiona group affiliation)
+
+```{r data scaling, include=FALSE}
+
+#select only experiment data and remove any taxa in OTU_table not present in these samples
+physeq <- subset_samples(physeq_qmexp, Treatment == "Mussel" | Treatment == "Control")
+physeq <- prune_taxa(taxa_sums(physeq) > 0, physeq)
+
+#check number of reads in each sample, differences in count are in part due differet numbers of chlorophyl reads depending on time of experiment
+sampsums <- data.frame(sums = sample_sums(physeq))
+
+ggplot(sampsums, aes(x = sums)) + geom_histogram(binwidth = 1000)
+
+min(sampsums)
+max(sampsums)
+
+# Scales reads to smallest library size which is 7835
+physeq.scale <- scale_reads(physeq, min(sample_sums(physeq)))
+
+```
+
+```{r PCoA Treatment and time for experiments}
+# Betadiv pcoa Bray-Curtis DNA only 
+physeq.pcoa <-
+  ordinate(
+    physeq = physeq.scale,
+    method = "PCoA",
+    distance = "bray"
+  )
+
+physeq.pcoa.vectors <- data.frame(physeq.pcoa$vectors[, 1:4])
+physeq.pcoa.vectors$Duplicates <- row.names(physeq.pcoa.vectors)
+physeq.pcoa.df <- merge(physeq.pcoa.vectors,data.frame(sample_data(physeq_qmexp)),by="Duplicates")
+
+bray_values <- physeq.pcoa$values
+bray_rel_eigens <- bray_values$Relative_eig
+bray_rel_eigen1 <- bray_rel_eigens[1]
+bray_rel_eigen1_percent <- round(bray_rel_eigen1 * 100, digits = 1)
+bray_rel_eigen2 <- bray_rel_eigens[2]
+bray_rel_eigen2_percent <- round(bray_rel_eigen2 * 100, digits = 1)
+bray_rel_eigen3 <- bray_rel_eigens[3]
+bray_rel_eigen3_percent <- round(bray_rel_eigen3 * 100, digits = 1)
+bray_rel_eigen4 <- bray_rel_eigens[4]
+bray_rel_eigen4_percent <- round(bray_rel_eigen4 * 100, digits = 1)
+bray_axis1 <- paste("PCoA1:",bray_rel_eigen1_percent,"%")
+bray_axis2 <- paste("PCoA2:",bray_rel_eigen2_percent,"%")
+bray_axis3 <- paste("PCoA3:",bray_rel_eigen3_percent,"%")
+bray_axis4 <- paste("PCoA4:",bray_rel_eigen4_percent,"%")
+
+PCoA_title <- paste("Bray-Curtis,",ntaxa(physeq.scale),"OTUs")
+
+pcoa_exp_BC12_wlegend <- ggplot(physeq.pcoa.df, aes(Axis.1, Axis.2, color = Treatment, shape = Date, fill = Treat_Time)) +
+  xlab(bray_axis1) + ylab(bray_axis2) + ggtitle(PCoA_title) +
+  geom_point(alpha=0.9) + theme_bw() + #ylim(1, -1) + xlim(1, -1) +
+  scale_color_manual(name = "Treatment", breaks=c("Control", "Mussel"),
+                     labels = c("without QM", "with QM"), 
+                     values = c("Control" = "mediumblue", "Mussel" = "red")) +
+  scale_shape_manual(name = "Date", breaks=c("Jul13", "Aug14",  "Dec14"),
+                     labels = c("Jul '13", "Aug '14",  "Dec '14"), 
+                     values = c("Jul13" = 21, "Aug14" = 22, "Dec14" = 24)) +
+  scale_fill_manual(name = "Time point", breaks = c("ControlT0", "ControlT3","MusselT0", "MusselT3"), 
+                     labels = c("T0","T3","T0","T3"),
+                     values = c("ControlT0" = "white", "ControlT3" = "mediumblue", "MusselT0" = "white", "MusselT3" = "red")) +
+  theme(plot.title = element_text(face="bold", size=8),  #Set the plot title
+        axis.text.x = element_text(colour="black", vjust=0.5, size=8), 
+        axis.text.y = element_text(colour="black", vjust=0.5, size=8),
+        axis.title.x = element_text(face="bold", size=8),
+        axis.title.y = element_text(face="bold", size=8),
+        legend.title = element_text(size=12, face="bold"),
+        legend.text = element_text(size = 12),
+        ###LEGEND TOP RIGHT CORNER
+        legend.position = "bottom"); pcoa_exp_BC12_wlegend
+
+pcoa_exp_BC12 <- ggplot(physeq.pcoa.df, aes(Axis.1, Axis.2, color = Treatment, shape = Date, fill = Treat_Time)) +
+  xlab(bray_axis1) + ylab(bray_axis2) + ggtitle(PCoA_title) +
+  geom_point(alpha=0.9) + theme_bw() + #ylim(1, -1) + xlim(1, -1) +
+  scale_color_manual(name = "Treatment", breaks=c("Control", "Mussel"),
+                     labels = c("without QM", "with QM"), 
+                     values = c("Control" = "mediumblue", "Mussel" = "red")) +
+  scale_shape_manual(name = "Date", breaks=c("Jul13", "Aug14",  "Dec14"),
+                     labels = c("Jul '13", "Aug '14",  "Dec '14"), 
+                     values = c("Jul13" = 21, "Aug14" = 22, "Dec14" = 24)) +
+  scale_fill_manual(name = "Time point", breaks = c("ControlT0", "ControlT3","MusselT0", "MusselT3"), 
+                     labels = c("T0","T3","T0","T3"),
+                     values = c("ControlT0" = "white", "ControlT3" = "mediumblue", "MusselT0" = "white", "MusselT3" = "red")) +
+  theme(plot.title = element_text(face="bold", size=8),  #Set the plot title
+        axis.text.x = element_text(colour="black", vjust=0.5, size=8), 
+        axis.text.y = element_text(colour="black", vjust=0.5, size=8),
+        axis.title.x = element_text(face="bold", size=8),
+        axis.title.y = element_text(face="bold", size=8),
+        legend.title = element_text(size=12, face="bold"),
+        legend.text = element_text(size = 12),
+        ###LEGEND TOP RIGHT CORNER
+        legend.position = "none"); pcoa_exp_BC12
+
+pcoa_exp_BC13 <- ggplot(physeq.pcoa.df, aes(Axis.1, Axis.3, color = Treatment, shape = Date, fill = Treat_Time)) +
+  xlab(bray_axis1) + ylab(bray_axis3) + ggtitle(PCoA_title) +
+  geom_point(alpha=0.9) + theme_bw() + #ylim(1, -1) + xlim(1, -1) +
+  scale_color_manual(name = "Treatment", breaks=c("Control", "Mussel"),
+                     labels = c("without QM", "with QM"), 
+                     values = c("Control" = "mediumblue", "Mussel" = "red")) +
+  scale_shape_manual(name = "Date", breaks=c("Jul13", "Aug14",  "Dec14"),
+                     labels = c("Jul '13", "Aug '14",  "Dec '14"), 
+                     values = c("Jul13" = 21, "Aug14" = 22, "Dec14" = 24)) +
+  scale_fill_manual(name = "Time point", breaks = c("ControlT0", "ControlT3","MusselT0", "MusselT3"), 
+                     labels = c("T0","T3","T0","T3"),
+                     values = c("ControlT0" = "white", "ControlT3" = "mediumblue", "MusselT0" = "white", "MusselT3" = "red")) +
+  theme(plot.title = element_text(face="bold", size=8),  #Set the plot title
+        axis.text.x = element_text(colour="black", vjust=0.5, size=8), 
+        axis.text.y = element_text(colour="black", vjust=0.5, size=8),
+        axis.title.x = element_text(face="bold", size=8),
+        axis.title.y = element_text(face="bold", size=8),
+        legend.title = element_text(size=12, face="bold"),
+        legend.text = element_text(size = 12),
+        ###LEGEND TOP RIGHT CORNER
+        legend.position = "none"); pcoa_exp_BC13
+
+
+# Plot legend only
+tmp <- ggplot_gtable(ggplot_build(pcoa_exp_BC12_wlegend)) 
+leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box") 
+plot.legend <- tmp$grobs[[leg]] 
+
+```
+
+```{r adonis experimental data when all data combined}
+## All experiment, add variable Effect, which compares MusselT3 to all others
+sampledf <- data.frame(sample_data(physeq.scale))
+sampledf$Effect[sampledf$Treat_Time=="MusselT0" | sampledf$Treatment=="Control"]<-"Control"
+sampledf$Effect[sampledf$Treat_Time=="MusselT3"]<-"MusselT3"
+
+# Calculate bray curtis for experimental samples only
+physeq.bray <- phyloseq::distance(physeq = physeq.scale, method = "bray")
+
+# Adonis test for season
+adonis(physeq.bray ~ Treat_Time, data = sampledf)
+b = betadisper(physeq.bray,sampledf$Treat_Time)
+p <- permutest(b)
+p$tab
+
+# Adonis test for effect
+adonis(physeq.bray ~ Effect, data = sampledf)
+b = betadisper(physeq.bray,sampledf$Effect)
+p <- permutest(b)
+p$tab
+
+# Nested adonis
+adonis(physeq.bray ~ Date + Effect, data = sampledf)
+
+# Nested adonis
+adonis(physeq.bray ~ Date + Treat_Time, data = sampledf)
+
+
+##Only summer experiments, add variable Effect, which compares MusselT3 to all others
+physeq.su <- subset_samples(physeq.scale, Date == "Jul13" | Date == "Aug14")
+physeq.su <- prune_taxa(taxa_sums(physeq.su) > 0, physeq.su)
+sampledf.su <- data.frame(sample_data(physeq.su))
+sampledf.su$Effect[sampledf.su$Treat_Time=="MusselT0" | sampledf.su$Treatment=="Control"]<-"Control"
+sampledf.su$Effect[sampledf.su$Treat_Time=="MusselT3"]<-"MusselT3"
+
+# Calculate bray curtis for summer samples only
+physeq.su.bray <- phyloseq::distance(physeq = physeq.su, method = "bray")
+
+# Adonis test for treatment and time (QM vs no QM + T0 and T3)
+adonis(physeq.su.bray ~ Treat_Time, data = sampledf.su)
+b = betadisper(physeq.su.bray,sampledf.su$Treat_Time)
+p <- permutest(b)
+p$tab
+
+# Adonis test for effect
+adonis(physeq.su.bray ~ Effect, data = sampledf.su)
+b = betadisper(physeq.su.bray,sampledf.su$Effect)
+p <- permutest(b)
+p$tab
+
+# Nested adonis
+adonis(physeq.su.bray ~ Date + Treat_Time, data = sampledf.su)
+
+# Nested adonis
+adonis(physeq.su.bray ~ Date + Effect, data = sampledf.su)
+
+```
+
+```{r AMOVA and PERMANOVA by experiment}
+###Experiment by experiment
+## JULY 2013
+#MusselT3 vs all others by adding variable "Effect" - SIGNIFICANT
+physeq.jul13 <- subset_samples(physeq.scale, Date == "Jul13")
+physeq.jul13 <- prune_taxa(taxa_sums(physeq.jul13) > 0, physeq.jul13)
+sampledf.jul13 <- data.frame(sample_data(physeq.jul13))
+sampledf.jul13$Effect[sampledf.jul13$Treat_Time=="MusselT0" | sampledf.jul13$Treatment=="Control"]<-"Control"
+sampledf.jul13$Effect[sampledf.jul13$Treat_Time=="MusselT3"]<-"MusselT3"
+# Calculate bray curtis for summer samples only
+physeq.jul13.bray <- phyloseq::distance(physeq = physeq.jul13, method = "bray")
+# run AMOVA
+amova(physeq.jul13.bray ~ Effect, data = sampledf.jul13)
+
+#Contrl T0 vs T3 - NOT SIGNIFICANTLY DIFFERENT
+physeq.jul13.C <- subset_samples(physeq.scale, Date == "Jul13" & Treatment == "Control")
+physeq.jul13.C <- prune_taxa(taxa_sums(physeq.jul13.C) > 0, physeq.jul13.C)
+sampledf.jul13.C <- data.frame(sample_data(physeq.jul13.C))
+# Calculate bray curtis for summer samples only
+physeq.jul13.C.bray <- phyloseq::distance(physeq = physeq.jul13.C, method = "bray")
+# run AMOVA
+amova(physeq.jul13.C.bray ~ Time_point, data = sampledf.jul13.C)
+
+#Mussel T0 vs T3 - SIGNIFICANTLY DIFFERENT
+physeq.jul13.M <- subset_samples(physeq.scale, Date == "Jul13" & Treatment == "Mussel")
+physeq.jul13.M <- prune_taxa(taxa_sums(physeq.jul13.M) > 0, physeq.jul13.M)
+sampledf.jul13.M <- data.frame(sample_data(physeq.jul13.M))
+# Calculate bray curtis for summer samples only
+physeq.jul13.M.bray <- phyloseq::distance(physeq = physeq.jul13.M, method = "bray")
+# run AMOVA
+amova(physeq.jul13.M.bray ~ Time_point, data = sampledf.jul13.M)
+
+#Mussel T3 vs Control T3 - SIGNIFICANTLY DIFFERENT
+physeq.jul13.T3 <- subset_samples(physeq.scale, Date == "Jul13" & Time_point == "T3")
+physeq.jul13.T3 <- prune_taxa(taxa_sums(physeq.jul13.T3) > 0, physeq.jul13.T3)
+sampledf.jul13.T3 <- data.frame(sample_data(physeq.jul13.T3))
+# Calculate bray curtis for summer samples only
+physeq.jul13.T3.bray <- phyloseq::distance(physeq = physeq.jul13.T3, method = "bray")
+# run AMOVA
+amova(physeq.jul13.T3.bray ~ Treatment, data = sampledf.jul13.T3)
+
+#Mussel T0 vs Control T0 - NOT SIGNIFICANTLY DIFFERENT
+physeq.jul13.T0 <- subset_samples(physeq.scale, Date == "Jul13" & Time_point == "T0")
+physeq.jul13.T0 <- prune_taxa(taxa_sums(physeq.jul13.T0) > 0, physeq.jul13.T0)
+sampledf.jul13.T0 <- data.frame(sample_data(physeq.jul13.T0))
+# Calculate bray curtis for summer samples only
+physeq.jul13.T0.bray <- phyloseq::distance(physeq = physeq.jul13.T0, method = "bray")
+# run AMOVA
+amova(physeq.jul13.T0.bray ~ Treatment, data = sampledf.jul13.T0)
+
+#PERMANOVA Jul13
+# adonis MusselT3 vs all
+adonis(physeq.jul13.bray ~ Effect, data = sampledf.jul13)
+
+## AUGUST 2014
+#MusselT3 vs all others by adding variable "Effect" - SIGNIFICANT
+physeq.Aug14 <- subset_samples(physeq.scale, Date == "Aug14")
+physeq.Aug14 <- prune_taxa(taxa_sums(physeq.Aug14) > 0, physeq.Aug14)
+sampledf.Aug14 <- data.frame(sample_data(physeq.Aug14))
+sampledf.Aug14$Effect[sampledf.Aug14$Treat_Time=="MusselT0" | sampledf.Aug14$Treatment=="Control"]<-"Control"
+sampledf.Aug14$Effect[sampledf.Aug14$Treat_Time=="MusselT3"]<-"MusselT3"
+# Calculate bray curtis for summer samples only
+physeq.Aug14.bray <- phyloseq::distance(physeq = physeq.Aug14, method = "bray")
+# run AMOVA
+amova(physeq.Aug14.bray ~ Effect, data = sampledf.Aug14)
+
+#Contrl T0 vs T3 - NOT SIGNIFICANTLY DIFFERENT
+physeq.Aug14.C <- subset_samples(physeq.scale, Date == "Aug14" & Treatment == "Control")
+physeq.Aug14.C <- prune_taxa(taxa_sums(physeq.Aug14.C) > 0, physeq.Aug14.C)
+sampledf.Aug14.C <- data.frame(sample_data(physeq.Aug14.C))
+# Calculate bray curtis for summer samples only
+physeq.Aug14.C.bray <- phyloseq::distance(physeq = physeq.Aug14.C, method = "bray")
+# run AMOVA
+amova(physeq.Aug14.C.bray ~ Time_point, data = sampledf.Aug14.C)
+
+#Mussel T0 vs T3 - SIGNIFICANTLY DIFFERENT
+physeq.Aug14.M <- subset_samples(physeq.scale, Date == "Aug14" & Treatment == "Mussel")
+physeq.Aug14.M <- prune_taxa(taxa_sums(physeq.Aug14.M) > 0, physeq.Aug14.M)
+sampledf.Aug14.M <- data.frame(sample_data(physeq.Aug14.M))
+# Calculate bray curtis for summer samples only
+physeq.Aug14.M.bray <- phyloseq::distance(physeq = physeq.Aug14.M, method = "bray")
+# run AMOVA
+amova(physeq.Aug14.M.bray ~ Time_point, data = sampledf.Aug14.M)
+
+#Mussel T3 vs Control T3 - SIGNIFICANTLY DIFFERENT
+physeq.Aug14.T3 <- subset_samples(physeq.scale, Date == "Aug14" & Time_point == "T3")
+physeq.Aug14.T3 <- prune_taxa(taxa_sums(physeq.Aug14.T3) > 0, physeq.Aug14.T3)
+sampledf.Aug14.T3 <- data.frame(sample_data(physeq.Aug14.T3))
+# Calculate bray curtis for summer samples only
+physeq.Aug14.T3.bray <- phyloseq::distance(physeq = physeq.Aug14.T3, method = "bray")
+# run AMOVA
+amova(physeq.Aug14.T3.bray ~ Treatment, data = sampledf.Aug14.T3)
+
+#Mussel T0 vs Control T0 - NOT SIGNIFICANTLY DIFFERENT
+physeq.Aug14.T0 <- subset_samples(physeq.scale, Date == "Aug14" & Time_point == "T0")
+physeq.Aug14.T0 <- prune_taxa(taxa_sums(physeq.Aug14.T0) > 0, physeq.Aug14.T0)
+sampledf.Aug14.T0 <- data.frame(sample_data(physeq.Aug14.T0))
+# Calculate bray curtis for summer samples only
+physeq.Aug14.T0.bray <- phyloseq::distance(physeq = physeq.Aug14.T0, method = "bray")
+# run AMOVA
+amova(physeq.Aug14.T0.bray ~ Treatment, data = sampledf.Aug14.T0)
+
+#PERMANOVA Aug14
+# adonis MusselT3 vs all
+adonis(physeq.Aug14.bray ~ Effect, data = sampledf.Aug14)
+
+## DECEMBER 2014
+#MusselT3 vs all others by adding variable "Effect" - NOT SIGNIFICANTLY DIFFERENT
+physeq.Dec14 <- subset_samples(physeq.scale, Date == "Dec14")
+physeq.Dec14 <- prune_taxa(taxa_sums(physeq.Dec14) > 0, physeq.Dec14)
+sampledf.Dec14 <- data.frame(sample_data(physeq.Dec14))
+sampledf.Dec14$Effect[sampledf.Dec14$Treat_Time=="MusselT0" | sampledf.Dec14$Treatment=="Control"]<-"Control"
+sampledf.Dec14$Effect[sampledf.Dec14$Treat_Time=="MusselT3"]<-"MusselT3"
+# Calculate bray curtis for summer samples only
+physeq.Dec14.bray <- phyloseq::distance(physeq = physeq.Dec14, method = "bray")
+# run AMOVA
+amova(physeq.Dec14.bray ~ Effect, data = sampledf.Dec14)
+
+#Contrl T0 vs T3 - NOT SIGNIFICANTLY DIFFERENT
+physeq.Dec14.C <- subset_samples(physeq.scale, Date == "Dec14" & Treatment == "Control")
+physeq.Dec14.C <- prune_taxa(taxa_sums(physeq.Dec14.C) > 0, physeq.Dec14.C)
+sampledf.Dec14.C <- data.frame(sample_data(physeq.Dec14.C))
+# Calculate bray curtis for summer samples only
+physeq.Dec14.C.bray <- phyloseq::distance(physeq = physeq.Dec14.C, method = "bray")
+# run AMOVA
+amova(physeq.Dec14.C.bray ~ Time_point, data = sampledf.Dec14.C)
+
+#Mussel T0 vs T3 - NOT SIGNIFICANTLY DIFFERENT
+physeq.Dec14.M <- subset_samples(physeq.scale, Date == "Dec14" & Treatment == "Mussel")
+physeq.Dec14.M <- prune_taxa(taxa_sums(physeq.Dec14.M) > 0, physeq.Dec14.M)
+sampledf.Dec14.M <- data.frame(sample_data(physeq.Dec14.M))
+# Calculate bray curtis for summer samples only
+physeq.Dec14.M.bray <- phyloseq::distance(physeq = physeq.Dec14.M, method = "bray")
+# run AMOVA
+amova(physeq.Dec14.M.bray ~ Time_point, data = sampledf.Dec14.M)
+
+#Mussel T3 vs Control T3 - NOT SIGNIFICANTLY DIFFERENT
+physeq.Dec14.T3 <- subset_samples(physeq.scale, Date == "Dec14" & Time_point == "T3")
+physeq.Dec14.T3 <- prune_taxa(taxa_sums(physeq.Dec14.T3) > 0, physeq.Dec14.T3)
+sampledf.Dec14.T3 <- data.frame(sample_data(physeq.Dec14.T3))
+# Calculate bray curtis for summer samples only
+physeq.Dec14.T3.bray <- phyloseq::distance(physeq = physeq.Dec14.T3, method = "bray")
+# run AMOVA
+amova(physeq.Dec14.T3.bray ~ Treatment, data = sampledf.Dec14.T3)
+
+#Mussel T0 vs Control T0 - NOT SIGNIFICANTLY DIFFERENT
+physeq.Dec14.T0 <- subset_samples(physeq.scale, Date == "Dec14" & Time_point == "T0")
+physeq.Dec14.T0 <- prune_taxa(taxa_sums(physeq.Dec14.T0) > 0, physeq.Dec14.T0)
+sampledf.Dec14.T0 <- data.frame(sample_data(physeq.Dec14.T0))
+# Calculate bray curtis for summer samples only
+physeq.Dec14.T0.bray <- phyloseq::distance(physeq = physeq.Dec14.T0, method = "bray")
+# run AMOVA
+amova(physeq.Dec14.T0.bray ~ Treatment, data = sampledf.Dec14.T0)
+
+#PERMANOVA Dec14
+# adonis MusselT3 vs all
+adonis(physeq.Dec14.bray ~ Effect, data = sampledf.Dec14)
+```
+
+```{r pcoa by experiment}
+# Betadiv pcoa Bray-Curtis DNA only 
+physeq.jul13.pcoa <-
+  ordinate(
+    physeq = physeq.jul13,
+    method = "PCoA",
+    distance = "bray"
+  )
+
+physeq.aug14.pcoa <-
+  ordinate(
+    physeq = physeq.Aug14,
+    method = "PCoA",
+    distance = "bray"
+  )
+
+physeq.dec14.pcoa <-
+  ordinate(
+    physeq = physeq.Dec14,
+    method = "PCoA",
+    distance = "bray"
+  )
+
+#extract data and plot Jul13
+physeq.pcoa.vectors <- data.frame(physeq.jul13.pcoa$vectors[, 1:4])
+physeq.pcoa.vectors$Duplicates <- row.names(physeq.pcoa.vectors)
+physeq.pcoa.df <- merge(physeq.pcoa.vectors,data.frame(sample_data(physeq_qmexp)),by="Duplicates")
+
+bray_values <- physeq.jul13.pcoa$values
+bray_rel_eigens <- bray_values$Relative_eig
+bray_rel_eigen1 <- bray_rel_eigens[1]
+bray_rel_eigen1_percent <- round(bray_rel_eigen1 * 100, digits = 1)
+bray_rel_eigen2 <- bray_rel_eigens[2]
+bray_rel_eigen2_percent <- round(bray_rel_eigen2 * 100, digits = 1)
+bray_rel_eigen3 <- bray_rel_eigens[3]
+bray_rel_eigen3_percent <- round(bray_rel_eigen3 * 100, digits = 1)
+bray_rel_eigen4 <- bray_rel_eigens[4]
+bray_rel_eigen4_percent <- round(bray_rel_eigen4 * 100, digits = 1)
+bray_axis1 <- paste("PCoA1:",bray_rel_eigen1_percent,"%")
+bray_axis2 <- paste("PCoA2:",bray_rel_eigen2_percent,"%")
+bray_axis3 <- paste("PCoA3:",bray_rel_eigen3_percent,"%")
+bray_axis4 <- paste("PCoA4:",bray_rel_eigen4_percent,"%")
+
+PCoA_title <- paste("Jul13")
+
+pcoa_expJul13_BC12 <- ggplot(physeq.pcoa.df, aes(Axis.1, Axis.2, color = Treatment, shape = Date, fill = Treat_Time)) +
+  xlab(bray_axis1) + ylab(bray_axis2) + ggtitle(PCoA_title) +
+  geom_point(alpha=0.9) + theme_bw() + #ylim(1, -1) + xlim(1, -1) +
+  scale_color_manual(name = "Treatment", breaks=c("Control", "Mussel"),
+                     labels = c("without QM", "with QM"), 
+                     values = c("Control" = "mediumblue", "Mussel" = "red")) +
+  scale_shape_manual(name = "Date", breaks=c("Jul13"),
+                     labels = c("Jul '13"), 
+                     values = c("Jul13" = 21)) +
+  scale_fill_manual(name = "Time point", breaks = c("ControlT0", "ControlT3","MusselT0", "MusselT3"), 
+                     labels = c("T0","T3","T0","T3"),
+                     values = c("ControlT0" = "white", "ControlT3" = "mediumblue", "MusselT0" = "white", "MusselT3" = "red")) +
+  theme(plot.title = element_text(face="bold", size=8),  #Set the plot title
+        axis.text.x = element_text(colour="black", vjust=0.5, size=8), 
+        axis.text.y = element_text(colour="black", vjust=0.5, size=8),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.title = element_text(size=12, face="bold"),
+        legend.text = element_text(size = 12),
+        ###LEGEND TOP RIGHT CORNER
+        legend.position = "none"); pcoa_expJul13_BC12
+
+#extract data and plot Aug14
+physeq.pcoa.vectors <- data.frame(physeq.aug14.pcoa$vectors[, 1:4])
+physeq.pcoa.vectors$Duplicates <- row.names(physeq.pcoa.vectors)
+physeq.pcoa.df <- merge(physeq.pcoa.vectors,data.frame(sample_data(physeq_qmexp)),by="Duplicates")
+
+bray_values <- physeq.aug14.pcoa$values
+bray_rel_eigens <- bray_values$Relative_eig
+bray_rel_eigen1 <- bray_rel_eigens[1]
+bray_rel_eigen1_percent <- round(bray_rel_eigen1 * 100, digits = 1)
+bray_rel_eigen2 <- bray_rel_eigens[2]
+bray_rel_eigen2_percent <- round(bray_rel_eigen2 * 100, digits = 1)
+bray_rel_eigen3 <- bray_rel_eigens[3]
+bray_rel_eigen3_percent <- round(bray_rel_eigen3 * 100, digits = 1)
+bray_rel_eigen4 <- bray_rel_eigens[4]
+bray_rel_eigen4_percent <- round(bray_rel_eigen4 * 100, digits = 1)
+bray_axis1 <- paste("PCoA1:",bray_rel_eigen1_percent,"%")
+bray_axis2 <- paste("PCoA2:",bray_rel_eigen2_percent,"%")
+bray_axis3 <- paste("PCoA3:",bray_rel_eigen3_percent,"%")
+bray_axis4 <- paste("PCoA4:",bray_rel_eigen4_percent,"%")
+
+PCoA_title <- paste("Aug14")
+
+pcoa_expAug14_BC12 <- ggplot(physeq.pcoa.df, aes(-Axis.1, -Axis.2, color = Treatment, shape = Date, fill = Treat_Time)) +
+  xlab(bray_axis1) + ylab(bray_axis2) + ggtitle(PCoA_title) +
+  geom_point(alpha=0.9) + theme_bw() + #ylim(1, -1) + xlim(1, -1) +
+  scale_color_manual(name = "Treatment", breaks=c("Control", "Mussel"),
+                     labels = c("without QM", "with QM"), 
+                     values = c("Control" = "mediumblue", "Mussel" = "red")) +
+  scale_shape_manual(name = "Date", breaks=c("Aug14"),
+                     labels = c("Aug '14"), 
+                     values = c("Aug14" = 22)) +
+  scale_fill_manual(name = "Time point", breaks = c("ControlT0", "ControlT3","MusselT0", "MusselT3"), 
+                     labels = c("T0","T3","T0","T3"),
+                     values = c("ControlT0" = "white", "ControlT3" = "mediumblue", "MusselT0" = "white", "MusselT3" = "red")) +
+  theme(plot.title = element_text(face="bold", size=8),  #Set the plot title
+        axis.text.x = element_text(colour="black", vjust=0.5, size=8), 
+        axis.text.y = element_text(colour="black", vjust=0.5, size=8),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.title = element_text(size=12, face="bold"),
+        legend.text = element_text(size = 12),
+        ###LEGEND TOP RIGHT CORNER
+        legend.position = "none"); pcoa_expAug14_BC12
+
+#extract data and plot Dec14
+physeq.pcoa.vectors <- data.frame(physeq.dec14.pcoa$vectors[, 1:4])
+physeq.pcoa.vectors$Duplicates <- row.names(physeq.pcoa.vectors)
+physeq.pcoa.df <- merge(physeq.pcoa.vectors,data.frame(sample_data(physeq_qmexp)),by="Duplicates")
+
+bray_values <- physeq.dec14.pcoa$values
+bray_rel_eigens <- bray_values$Relative_eig
+bray_rel_eigen1 <- bray_rel_eigens[1]
+bray_rel_eigen1_percent <- round(bray_rel_eigen1 * 100, digits = 1)
+bray_rel_eigen2 <- bray_rel_eigens[2]
+bray_rel_eigen2_percent <- round(bray_rel_eigen2 * 100, digits = 1)
+bray_rel_eigen3 <- bray_rel_eigens[3]
+bray_rel_eigen3_percent <- round(bray_rel_eigen3 * 100, digits = 1)
+bray_rel_eigen4 <- bray_rel_eigens[4]
+bray_rel_eigen4_percent <- round(bray_rel_eigen4 * 100, digits = 1)
+bray_axis1 <- paste("PCoA1:",bray_rel_eigen1_percent,"%")
+bray_axis2 <- paste("PCoA2:",bray_rel_eigen2_percent,"%")
+bray_axis3 <- paste("PCoA3:",bray_rel_eigen3_percent,"%")
+bray_axis4 <- paste("PCoA4:",bray_rel_eigen4_percent,"%")
+
+PCoA_title <- paste("Dec14")
+
+pcoa_expDec14_BC12 <- ggplot(physeq.pcoa.df, aes(-Axis.1, -Axis.2, color = Treatment, shape = Date, fill = Treat_Time)) +
+  xlab(bray_axis1) + ylab(bray_axis2) + ggtitle(PCoA_title) +
+  geom_point(alpha=0.9) + theme_bw() + #ylim(1, -1) + xlim(1, -1) +
+  scale_color_manual(name = "Treatment", breaks=c("Control", "Mussel"),
+                     labels = c("without QM", "with QM"), 
+                     values = c("Control" = "mediumblue", "Mussel" = "red")) +
+  scale_shape_manual(name = "Date", breaks=c("Dec14"),
+                     labels = c("Dec '14"), 
+                     values = c("Dec14" = 24)) +
+  scale_fill_manual(name = "Time point", breaks = c("ControlT0", "ControlT3","MusselT0", "MusselT3"), 
+                     labels = c("T0","T3","T0","T3"),
+                     values = c("ControlT0" = "white", "ControlT3" = "mediumblue", "MusselT0" = "white", "MusselT3" = "red")) +
+  theme(plot.title = element_text(face="bold", size=8),  #Set the plot title
+        axis.text.x = element_text(colour="black", vjust=0.5, size=8), 
+        axis.text.y = element_text(colour="black", vjust=0.5, size=8),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.title = element_text(size=12, face="bold"),
+        legend.text = element_text(size = 12),
+        ###LEGEND TOP RIGHT CORNER
+        legend.position = "none"); pcoa_expDec14_BC12
+
+```
+
+
+```{r test homogenizing effect on BCC by mussel}
+#create dataframe with paired BC dissimilarity and add metadata for compared samples
+physeq.su.bray <- phyloseq::distance(physeq = physeq.su, method = "bray")
+bray_df <- melt(as.matrix(physeq.su.bray), varnames = c("samp1", "samp2"))
+
+bray_df$treat1 <- substr(bray_df$samp1,1,1) # Create a new column called treat1 with first letter of string
+bray_df$treat2 <- substr(bray_df$samp2,1,1) # Create a new column called treat2 with first letter of string
+
+bray_df$time1 <- substr(bray_df$samp1,4,4) # Create a new column called time1 with letter 4 of string
+bray_df$time2 <- substr(bray_df$samp2,4,4) # Create a new column called time2 with letter 4 of string
+
+
+#combine category names to group similar comparisons - sorry, clunky code here, but hey, it works!
+bray_df$within[bray_df$treat1==bray_df$treat2&bray_df$treat2=="E"&bray_df$time1==bray_df$time2&bray_df$time2=="0"]<-"E0"
+bray_df$within[bray_df$treat1==bray_df$treat2&bray_df$treat2=="E"&bray_df$time1==bray_df$time2&bray_df$time2=="3"]<-"E3"
+bray_df$within[bray_df$treat1==bray_df$treat2&bray_df$treat2=="C"&bray_df$time1==bray_df$time2&bray_df$time2=="0"]<-"C0"
+bray_df$within[bray_df$treat1==bray_df$treat2&bray_df$treat2=="C"&bray_df$time1==bray_df$time2&bray_df$time2=="3"]<-"C3"
+
+#only retain BC within treatment/time dissimilarities 
+bray_df_wi <- subset(bray_df, treat1 == treat2 & time1 == time2)
+
+#Kruskall-Wallis test
+bray_wi_KW <- kruskal.test(bray_df_wi$value ~ as.factor(bray_df_wi$within)) 
+print(bray_wi_KW)  # show Kruskal Wallis result
+
+# Which samples are significantly different from each other?  
+bray_wi_KW_MC <- kruskalmc(bray_df_wi$value ~ as.factor(bray_df_wi$within))  ## Defaults to P < 0.05
+print(bray_wi_KW_MC)
+####no homogenizing effect observed as bcc difference among mussel treatement and among control experiments are not significantly different
+```
+
+```{r DESeq mussel t3 vs control 2013 and 2014 summer month experiments}
+
+# Subset to summer samples T3 (nonscaled data)
+physeq.qmexp.T3 <- subset_samples(physeq, Date == "Jul13" & Time_point == "T3"| Date == "Aug14" & Time_point == "T3")
+physeq.qmexp.T3 <- prune_taxa(taxa_sums(physeq.qmexp.T3) > 0, physeq.qmexp.T3)
+
+# Prune out rare taxa
+# calculate average number of reads in non-scaled data 
+mean(sample_sums(physeq.qmexp.T3))
+
+# Keep OTUs above average relative abundance of 16 reads (0.1%)
+a <- apply(otu_table(physeq.qmexp.T3), MARGIN = 1, function(x) {mean(x)} )
+keep <- a > 16
+physeq.prune <- prune_taxa(keep, physeq.qmexp.T3)
+ntaxa(physeq.prune) 
+
+# Convert to deseq object
+# Parametric fit was not good, so replaced with local
+qmexp.MT3vsCT3.deseq <- phyloseq_to_deseq2(physeq.prune, ~Date+Treat_Time)
+qmexp.MT3vsCT3.deseq = DESeq(qmexp.MT3vsCT3.deseq, test = "Wald", fitType = "local", betaPrior=FALSE)
+
+# Summarize results
+res = data.frame(results(qmexp.MT3vsCT3.deseq, cooksCutoff = FALSE))
+res = data.frame(OTU = row.names(res), res)
+alpha = 1
+sigtab <-
+  res %>%
+    filter(padj < alpha) 
+sigtab.qmexp.MT3vsCT3 <- cbind(sigtab, 
+  as(tax_table(physeq.prune)[sigtab$OTU, ], "matrix"))
+
+#calculate average abundance acorss all Summer T3 datasets to scale geom_point in plot
+plotvalue <- data.frame(data.frame(tax_table(physeq.qmexp.T3))$Species,as.vector(as.numeric(taxa_sums(physeq.qmexp.T3)/sum(sample_sums(physeq.qmexp.T3))*100)^0.25))
+colnames(plotvalue) <- c("species","abundance")
+row.names(plotvalue) <- plotvalue$species
+plotvalue <- plotvalue[row.names(plotvalue) %in% sigtab.qmexp.MT3vsCT3$Species, ]
+sigtab.qmexp.MT3vsCT3 <- cbind(sigtab.qmexp.MT3vsCT3,plotvalue[sigtab.qmexp.MT3vsCT3$OTU, ])
+sigtab.qmexp.MT3vsCT3$sig <- as.factor((sigtab.qmexp.MT3vsCT3$padj<0.05)*1)
+
+#add functional groups
+write.table(sigtab.qmexp.MT3vsCT3, file="sigtab.qmexp.MT3vsCT3")
+##added functional groups in excel based on literature search - this information is in Table S2
+sigtab.qmexp.MT3vsCT3_wfungroup <- read.table("sigtab.qmexp.MT3vsCT3_wfungroup",sep="\t",header=T,row.names=1,as.is=T)
+
+
+# Change genus levels so organized by phylum
+sigtab.qmexp.MT3vsCT3 <- arrange(sigtab.qmexp.MT3vsCT3, Phylum)
+sigtab.qmexp.MT3vsCT3$Genus <- factor(sigtab.qmexp.MT3vsCT3$Genus, 
+  levels = unique(sigtab.qmexp.MT3vsCT3$Genus))
+
+# Plot with phylum info
+plot.qmexp.MT3vsCT3 <- ggplot(sigtab.qmexp.MT3vsCT3, 
+  aes(y = Phylum, x = log2FoldChange, color = Phylum, shape = sig, size = abundance)) + 
+  geom_vline(aes(xintercept = 0), colour="grey", linetype = "longdash") +
+  #geom_hline(yintercept=c(1.5,2.5,3.5,4.5,5.5,6.5,7.5,8.5,9.5,10.5,11.5),colour="grey",linetype="dotted") +
+  xlab("log2fold MT3:CT3 ") + 
+  #scale_y_discrete(breaks=NULL) +
+  geom_point(alpha=0.7) + 
+  scale_shape_manual(name = "p-value", breaks = c("0", "1"), 
+                    labels = c("p>0.01", "p<0.01"),
+                    values = c("0" = 21, "1"= 19)) +
+  theme(
+    #axis.text.y = element_text(colour ="black",angle = 90, vjust = 0, hjust = 0, size = 10),
+    legend.position = "none"
+  ) 
+plot.qmexp.MT3vsCT3
+
+# Plot with fungroup info
+sigtab.qmexp.MT3vsCT3_wfungroup <- arrange(sigtab.qmexp.MT3vsCT3_wfungroup, energy)
+sigtab.qmexp.MT3vsCT3_wfungroup$energy <- factor(sigtab.qmexp.MT3vsCT3_wfungroup$energy,levels=c("org/litho(S,NH4+)/photo(BCHL)","org/litho(S)/photo(BCHL)","org/photo(BCHL)","org/photo(BR)","litho(NH4+)","org(C1)","org","photo(CHL)"))
+sigtab.qmexp.MT3vsCT3_wfungroup$C_source <- factor(sigtab.qmexp.MT3vsCT3_wfungroup$C_source,levels=c("autotroph","mixotroph","heterotroph"))
+sigtab.qmexp.MT3vsCT3_wfungroup$sig<-as.factor(sigtab.qmexp.MT3vsCT3_wfungroup$sig)
+
+plot.qmexp.MT3vsCT3.wfungroup <- ggplot(sigtab.qmexp.MT3vsCT3_wfungroup, 
+  aes(y = energy, x = log2FoldChange, color = C_source, shape = sig, size = abundance)) + 
+  xlim(-1.5,1) +
+  geom_vline(aes(xintercept = 0), colour="grey", linetype = "longdash") +
+  geom_hline(yintercept=c(1.5,2.5,3.5,4.5,5.5,6.5,7.5),colour="grey",linetype="dotted") +
+  xlab("log2fold MT3:CT3") + 
+  scale_y_discrete() +
+  geom_jitter(position = position_jitter(height = 0.4),alpha=0.7) + 
+  scale_shape_manual(name = "p-value", breaks = c("0", "1"), 
+                    labels = c("p>0.01", "p<0.01"),
+                    values = c("0" = 21, "1"= 19)) +
+ theme(plot.title = element_text(face="bold", size=7),  #Set the plot title
+             strip.text.x = element_blank(),  #Set the facet titles on x-axis 
+             strip.text.y = element_blank(),  #Set the facet titles on x-axis 
+             strip.background = element_blank(),  #Set the facet background to no background
+             axis.title.x = element_text(face="bold", size=7),  #Set the x-axis title
+             axis.title.y = element_blank(),  #Set the y-axis title
+             axis.text.x = element_text(angle=0, colour = "black", 
+                                        vjust=1, hjust = 1, size=7),  #Set the x-axis labels
+             axis.text.y = element_text(size = 7),  #Set the y-axis labels
+             legend.title = element_text(size = 8, face="bold"),  #Set the legend title 
+             legend.text = element_text(size = 8),  #Set the legend text
+             legend.position = "none",
+             panel.grid.major.y = element_blank(),
+             panel.grid.major.x = element_blank()) 
+plot.qmexp.MT3vsCT3.wfungroup
+
+sigtab.qmexp.MT3vsCT3_wfungroup <- arrange(sigtab.qmexp.MT3vsCT3_wfungroup, energy)
+sigtab.qmexp.MT3vsCT3_wfungroup$energy <- factor(sigtab.qmexp.MT3vsCT3_wfungroup$energy,levels=c("org/litho(S,NH4+)/photo(BCHL)","org/litho(S)/photo(BCHL)","org/photo(BCHL)","org/photo(BR)","litho(NH4+)","org(C1)","org","photo(CHL)"))
+sigtab.qmexp.MT3vsCT3_wfungroup$C_source <- factor(sigtab.qmexp.MT3vsCT3_wfungroup$C_source,levels=c("autotroph","mixotroph","heterotroph"))
+sigtab.qmexp.MT3vsCT3_wfungroup$sig<-as.factor(sigtab.qmexp.MT3vsCT3_wfungroup$sig)
+
+plot.qmexp.MT3vsCT3.wfungroup.noyaxislegend <- ggplot(sigtab.qmexp.MT3vsCT3_wfungroup, 
+  aes(y = energy, x = log2FoldChange, color = C_source, shape = sig, size = abundance)) + 
+  xlim(-1.5,1) +
+  geom_vline(aes(xintercept = 0), colour="grey", linetype = "longdash") +
+  geom_hline(yintercept=c(1.5,2.5,3.5,4.5,5.5,6.5,7.5),colour="grey",linetype="dotted") +
+  xlab("log2fold MT3:CT3") + 
+  scale_y_discrete() +
+  geom_jitter(position = position_jitter(height = 0.4),alpha=0.7) + 
+  scale_shape_manual(name = "p-value", breaks = c("0", "1"), 
+                    labels = c("p>0.01", "p<0.01"),
+                    values = c("0" = 21, "1"= 19)) +
+ theme(plot.title = element_text(face="bold", size=7),  #Set the plot title
+             strip.text.x = element_blank(),  #Set the facet titles on x-axis 
+             strip.text.y = element_blank(),  #Set the facet titles on x-axis 
+             strip.background = element_blank(),  #Set the facet background to no background
+             axis.title.x = element_text(face="bold", size=7),  #Set the x-axis title
+             axis.title.y = element_text(face="bold", size=7),  #Set the y-axis title
+             axis.text.x = element_text(angle=0, colour = "black", 
+                                        vjust=1, hjust = 1, size=7),  #Set the x-axis labels
+             axis.text.y = element_blank(),  #Set the y-axis labels
+             legend.title = element_text(size = 8, face="bold"),  #Set the legend title 
+             legend.text = element_text(size = 8),  #Set the legend text
+             legend.position = "none",
+             panel.grid.major.y = element_blank(),
+             panel.grid.major.x = element_blank()) 
+plot.qmexp.MT3vsCT3.wfungroup.noyaxislegend
+```
+
+```{r Correlation between feeding exp removal and Aug14 and July LM13 multifactorial PA vs FL preference}
+# subset only PA and FL samples, both from the Aug14 experiment as well as field samples 2013
+physeq.PAFL <- subset_samples(physeq.all, Group == "Experiment" & Treatment == "FL" | Group == "Experiment" &  Treatment == "PA" | Station =="MM110.DCMD" | Station == "MM15.DN")
+physeq.PAFL <- prune_taxa(taxa_sums(physeq.PAFL) > 0, physeq.PAFL)
+
+# Prune out rare taxa
+# calculate average number of reads in non-scaled data 
+mean(sample_sums(physeq.PAFL))
+
+# Keep OTUs above average relative abundance of 20 reads (0.1%)
+a <- apply(otu_table(physeq.PAFL), MARGIN = 1, function(x) {mean(x)} )
+keep <- a > 20
+physeq.PAFL.prune <- prune_taxa(keep, physeq.PAFL)
+ntaxa(physeq.PAFL.prune) 
+
+# Convert to deseq object
+qmexp.PAvsFL.deseq <- phyloseq_to_deseq2(physeq.PAFL.prune, ~Station+Treatment)
+qmexp.PAvsFL.deseq = DESeq(qmexp.PAvsFL.deseq, test = "Wald", fitType = "parametric", betaPrior=FALSE)
+
+# Summarize results
+res = data.frame(results(qmexp.PAvsFL.deseq, cooksCutoff = FALSE))
+res = data.frame(OTU = row.names(res), res)
+alpha = 1
+sigtab <-
+  res %>%
+    filter(padj < alpha) 
+sigtab.PAvsFL <- cbind(sigtab, 
+  as(tax_table(physeq.PAFL.prune)[sigtab$OTU, ], "matrix"))
+
+#calculate average abundance acorss all Summer T3 datasets to scale geom_point in plot
+plotvalue.PAFL <- data.frame(data.frame(tax_table(physeq.PAFL))$Species,as.vector(as.numeric(taxa_sums(physeq.PAFL)/sum(sample_sums(physeq.PAFL))*100)^0.25))
+colnames(plotvalue.PAFL) <- c("species","abundance")
+row.names(plotvalue.PAFL) <- plotvalue.PAFL$species
+plotvalue.PAFL <- plotvalue.PAFL[row.names(plotvalue.PAFL) %in% sigtab.PAvsFL$Species, ]
+sigtab.PAvsFL <- cbind(sigtab.PAvsFL,plotvalue.PAFL[sigtab.PAvsFL$OTU, ])
+sigtab.PAvsFL$sig <- as.factor((sigtab.PAvsFL$padj<0.05)*1)
+
+# Change genus levels so organized by phylum
+sigtab.PAvsFL <- arrange(sigtab.PAvsFL, Phylum)
+sigtab.PAvsFL$Genus <- factor(sigtab.PAvsFL$Genus, 
+  levels = unique(sigtab.PAvsFL$Genus))
+
+
+# Plot
+plot.PAvsFL <- ggplot(sigtab.PAvsFL, 
+  aes(y = Phylum, x = log2FoldChange, color = Phylum, shape = sig, size = abundance)) + 
+  xlim(8,-8) +
+  geom_vline(aes(xintercept = 0), colour="grey", linetype = "longdash") +
+  #geom_hline(yintercept=c(1.5,2.5,3.5,4.5,5.5,6.5,7.5,8.5,9.5,10.5,11.5),colour="grey",linetype="dotted") +
+  xlab("log2fold PA:FL ") + 
+  #scale_y_discrete(breaks=NULL) +
+  geom_point(alpha=0.7) + 
+  scale_shape_manual(name = "p-value", breaks = c("0", "1"), 
+                    labels = c("p>0.05", "p<0.05"),
+                    values = c("0" = 21, "1"= 19)) +
+  theme(
+    #axis.text.y = element_text(colour ="black",angle = 90, vjust = 0, hjust = 0, size = 10),
+    legend.position = "none"
+  ) 
+plot.PAvsFL
+
+#correlation 
+PAFL.df <- select(sigtab.PAvsFL,OTU,log2FoldChange)
+MT3CT3.df <- select(sigtab.qmexp.MT3vsCT3,OTU,log2FoldChange,Phylum,Class,Order,Family,Genus,Tribe,abundance,sig)
+cor.df <- merge(PAFL.df,MT3CT3.df,by="OTU")  
+colnames(cor.df)<-c("OTU","log2FoldChangeFLPA","log2FoldChangeQM","Phylum","Class","Order","Family","Genus","Tribe","abundance","sig")
+cor(cor.df$log2FoldChangeFLPA,cor.df$log2FoldChangeQM,method="pearson")
+
+
+# Fit a linear model
+fit <- lm(log2FoldChangeQM ~ log2FoldChangeFLPA, data = cor.df)
+# Grab model outputs
+fit_pvalue <-summary(fit)$coef[2,4]
+fit_r2 <- summary(fit)$r.squared
+# Normality of Residuals: distribution of studentized residuals
+library(MASS)
+sresid <- studres(fit) 
+hist(sresid, freq=FALSE, 
+   main="Distribution of Studentized Residuals")
+xfit<-seq(min(sresid),max(sresid),length=40) 
+yfit<-dnorm(xfit) 
+lines(xfit, yfit)
+
+#As the select() function in MASS conflicts with dplyr select() we're reloading dplyr
+detach(package:dplyr)
+library(dplyr)
+
+#add functional group information
+write.table(cor.df, file="cor.df")
+##added functional groups in excel based on literature search - this info is in Table S2
+cor_wfungroup.df <- read.table("cor_wfungroup.df",sep="\t",header=T,row.names=1,as.is=T)
+
+#plot with phylum colors
+cor.expvsPAFLplot <- ggplot(cor.df,aes(x = log2FoldChangeQM, y = -log2FoldChangeFLPA, size = abundance)) + 
+geom_vline(aes(xintercept = 0), colour="grey", linetype = "longdash") +
+geom_hline(aes(yintercept = 0), colour="grey", linetype = "longdash") +
+  geom_point(alpha=0.7,aes(color=Phylum,shape=sig)) +
+    scale_shape_manual(name = "p-value", breaks = c("0", "1"), 
+                    labels = c("p>0.05", "p<0.05"),
+                    values = c("0" = 21, "1"= 19)) +
+ylab("log2fold(FL/PA)") + xlab("log2fold(MT3/CT3)") + ggtitle("Feeding effect vs. fraction preference") +
+annotate("text",x = -1,y = -3, size = 3, label = paste("R2 =", round(fit_r2, digits = 2))) + geom_smooth(method = "lm", size = 1) +
+theme(legend.position="none")
+cor.expvsPAFLplot
+
+#plot with functional groups
+cor_wfungroup.df <- arrange(cor_wfungroup.df, energy)
+cor_wfungroup.df$energy <- factor(cor_wfungroup.df$energy,levels=c("org/litho(S,NH4+)/photo(BCHL)","org/litho(S)/photo(BCHL)","org/photo(BCHL)","org/photo(BR)","litho(NH4+)","org(C1)","org","photo(CHL)"))
+cor_wfungroup.df$C_source <- factor(cor_wfungroup.df$C_source,levels=c("autotroph","mixotroph","heterotroph"))
+cor_wfungroup.df$sig<-as.factor(cor_wfungroup.df$sig)
+
+cor.expvsPAFLplot.wfungroup <- ggplot(cor_wfungroup.df,aes(x = log2FoldChangeQM, y = -log2FoldChangeFLPA, size = abundance)) + 
+geom_vline(aes(xintercept = 0), colour="grey", linetype = "longdash") +
+geom_hline(aes(yintercept = 0), colour="grey", linetype = "longdash") +
+  geom_point(alpha=0.7,aes(color=C_source,shape=sig)) +
+    scale_shape_manual(name = "p-value", breaks = c("0", "1"), 
+                    labels = c("p>0.05", "p<0.05"),
+                    values = c("0" = 21, "1"= 19)) +
+ylab("log2fold(FL/PA)") + xlab("log2fold(MT3/CT3)") + ggtitle("Feeding effect vs. fraction preference") +
+annotate("text",x = -1,y = -3, size = 3, label = paste("R2 =", round(fit_r2, digits = 2))) + geom_smooth(method = "lm", size = 1) +
+theme(legend.position="none")
+cor.expvsPAFLplot.wfungroup
+```
+
+```{r final figure 1 + figure 2 + figure S3}
+library(grid)
+library(gridExtra)
+
+#Fig 1
+pdf(file="Figures/Rplot_BetaDiv_pcoa+DEseq_fungroup.pdf", width= 3.5, height=3.5, pointsize= 8, colormodel="cmyk", useDingbats = FALSE)
+#grid.arrange(arrangeGrob(pcoa_expJul13_BC12, pcoa_expAug14_BC12, pcoa_expDec14_BC12, ncol=2),plot.qmexp.MT3vsCT3.wfungroup, ncol=2, widths=c(1,1))
+grid.arrange(pcoa_expJul13_BC12, pcoa_expAug14_BC12,pcoa_expDec14_BC12, ncol=3)
+dev.off()
+
+#Fig 2
+pdf(file="Figures/Rplot_DESeq+corwPAFLPhylum.pdf", width= 7, height=3.5, pointsize= 8, colormodel="cmyk", useDingbats = FALSE)
+grid.arrange(plot.qmexp.MT3vsCT3,cor.expvsPAFLplot,ncol=2)
+dev.off()
+
+#Fig S1
+pdf(file="Figures/Rplot_corwPAFL_fungroup.pdf", width= 7, height=7, pointsize= 8, colormodel="cmyk", useDingbats = FALSE)
+grid.arrange(plot.qmexp.MT3vsCT3.wfungroup, cor.expvsPAFLplot.wfungroup,ncol=2) 
+dev.off()
+
+```
+
+##Fig. S2: comparison Jul13 field vs lab experiment + Jul13 vs Aug14 PAFL comparisons
+```{r replicate merging and data scaling, include=FALSE}
+#select only experiment data and remove any taxa in OTU_table not present in these samples
+physeq.Su13 <- subset_samples(physeq.all, Date == "Su13" | Date == "Jul13")
+physeq.Su13 <- prune_taxa(taxa_sums(physeq.Su13) > 0, physeq.Su13)
+
+# Merge samples on Duplicates column
+physeq.Su13_dupmerge <- merge_samples(physeq.Su13, "Duplicates")
+
+# Weird bug, set taxa to rows
+if (!taxa_are_rows(physeq.Su13_dupmerge)) {
+  otu_table(physeq.Su13_dupmerge) <- t(otu_table(physeq.Su13_dupmerge))
+}
+
+## Fix metadata of merged duplicates 
+# Grab unique lines (first entry) from inland phyloseq object metadata
+unique_idx <- !(duplicated(sample_data(physeq.Su13)$Duplicates))
+duplicate_metadata <- sample_data(physeq.Su13)[unique_idx, ]
+row.names(duplicate_metadata) <- duplicate_metadata$Duplicates
+
+# Assign new metadata to phyloseq object
+sample_data(physeq.Su13_dupmerge) <- duplicate_metadata
+physeq.Su13_dupmerge <- prune_taxa(taxa_sums(physeq.Su13_dupmerge) > 0, physeq.Su13_dupmerge)
+
+#check number of reads in each sample, differences in count are in part due differet numbers of chlorophyl reads depending on time of experiment
+sampsums <- data.frame(sums = sample_sums(physeq.Su13_dupmerge))
+
+ggplot(sampsums, aes(x = sums)) + geom_histogram(binwidth = 1000)
+
+min(sampsums)
+max(sampsums)
+
+# Scales reads to smallest library size which is 14915
+physeq.Su13.scale <- scale_reads(physeq.Su13_dupmerge, min(sample_sums(physeq.Su13_dupmerge)))
+
+sample_data(physeq.Su13_dupmerge)
+```
+
+```{r PCoA 2013 Experiment vs Field samples}
+
+# Betadiv pcoa Bray-Curtis DNA only 
+physeq.Su13.pcoa <-
+  ordinate(
+    physeq = physeq.Su13.scale,
+    method = "PCoA",
+    distance = "bray"
+  )
+
+physeq.Su13.pcoa.vectors <- data.frame(physeq.Su13.pcoa$vectors[, 1:4])
+physeq.Su13.pcoa.vectors$Duplicates <- row.names(physeq.Su13.pcoa.vectors)
+physeq.Su13.pcoa.df <- merge(physeq.Su13.pcoa.vectors,data.frame(sample_data(physeq.Su13)),by="Duplicates")
+
+bray_values <- physeq.Su13.pcoa$values
+bray_rel_eigens <- bray_values$Relative_eig
+bray_rel_eigen1 <- bray_rel_eigens[1]
+bray_rel_eigen1_percent <- round(bray_rel_eigen1 * 100, digits = 1)
+bray_rel_eigen2 <- bray_rel_eigens[2]
+bray_rel_eigen2_percent <- round(bray_rel_eigen2 * 100, digits = 1)
+bray_rel_eigen3 <- bray_rel_eigens[3]
+bray_rel_eigen3_percent <- round(bray_rel_eigen3 * 100, digits = 1)
+bray_rel_eigen4 <- bray_rel_eigens[4]
+bray_rel_eigen4_percent <- round(bray_rel_eigen4 * 100, digits = 1)
+bray_axis1 <- paste("PCoA1:",bray_rel_eigen1_percent,"%")
+bray_axis2 <- paste("PCoA2:",bray_rel_eigen2_percent,"%")
+bray_axis3 <- paste("PCoA3:",bray_rel_eigen3_percent,"%")
+bray_axis4 <- paste("PCoA4:",bray_rel_eigen4_percent,"%")
+
+PCoA_title <- paste("Bray-Curtis,",ntaxa(physeq.Su13.scale),"OTUs")
+
+pcoa_Su13_BC12_wolegend <- ggplot(physeq.Su13.pcoa.df, aes(Axis.1, Axis.2, color = Station, shape = Treatment)) +
+  xlab(bray_axis1) + ylab(bray_axis2) + ggtitle(PCoA_title) +
+  geom_point(alpha=0.9) + theme_bw() + #ylim(1, -1) + xlim(1, -1) +
+  scale_color_manual(name = "Station", breaks=c("M45.D", "MM110.DCMD","MM110.DN","MM110.SD","MM110.SN","MM15.DN","MM15.SD","MM15.SN"),
+                     labels = c("M45.D", "MM110.DCMD","MM110.DN","MM110.SD","MM110.SN","MM15.DN","MM15.SD","MM15.SN"), 
+                     values = c("M45.D" = "brown4", "MM110.DCMD" = "cyan4","MM110.DN" = "darkblue","MM110.SD" = "cyan3","MM110.SN" = "cyan3","MM15.DN" = "chartreuse4","MM15.SD" = "chartreuse3","MM15.SN" = "chartreuse3")) +
+  scale_shape_manual(name = "Treatment", breaks=c("Control", "Mussel","FL","PA"),
+                     labels = c("Exp/0.22-153", "Exp/0.22-153", "Field/0.22-3", "Field/3-20"),
+                     values = c("Control" = 17, "Mussel" = 17, "FL" = 16, "PA" =21)) +
+  theme(plot.title = element_text(face="bold", size=8),  #Set the plot title
+        axis.text.x = element_text(colour="black", vjust=0.5, size=8), 
+        axis.text.y = element_text(colour="black", vjust=0.5, size=8),
+        axis.title.x = element_text(face="bold", size=8),
+        axis.title.y = element_text(face="bold", size=8),
+        legend.title = element_text(size=6, face="bold"),
+        legend.text = element_text(size = 6),
+        ###LEGEND TOP RIGHT CORNER
+        legend.position = "none"); pcoa_Su13_BC12_wolegend
+
+pcoa_Su13_BC12_wlegend <- ggplot(physeq.Su13.pcoa.df, aes(Axis.1, Axis.2, color = Station, shape = Treatment)) +
+  xlab(bray_axis1) + ylab(bray_axis2) + ggtitle(PCoA_title) +
+  geom_point(alpha=0.9) + theme_bw() + #ylim(1, -1) + xlim(1, -1) +
+  scale_color_manual(name = "Station", breaks=c("M45.D", "MM110.DCMD","MM110.DN","MM110.SD","MM110.SN","MM15.DN","MM15.SD","MM15.SN"),
+                     labels = c("M45.D", "MM110.DCMD","MM110.DN","MM110.SD","MM110.SN","MM15.DN","MM15.SD","MM15.SN"), 
+                     values = c("M45.D" = "brown4", "MM110.DCMD" = "cyan4","MM110.DN" = "darkblue","MM110.SD" = "cyan3","MM110.SN" = "cyan3","MM15.DN" = "chartreuse4","MM15.SD" = "chartreuse3","MM15.SN" = "chartreuse3")) +
+  scale_shape_manual(name = "Treatment", breaks=c("Control", "Mussel","FL","PA"),
+                     labels = c("Exp/0.22-153", "Exp/0.22-153", "Field/0.22-3", "Field/3-20"),
+                     values = c("Control" = 17, "Mussel" = 17, "FL" = 16, "PA" =21)) +
+  theme(plot.title = element_text(face="bold", size=8),  #Set the plot title
+        axis.text.x = element_text(colour="black", vjust=0.5, size=8), 
+        axis.text.y = element_text(colour="black", vjust=0.5, size=8),
+        axis.title.x = element_text(face="bold", size=8),
+        axis.title.y = element_text(face="bold", size=8),
+        legend.title = element_text(size=6, face="bold"),
+        legend.text = element_text(size = 6),
+        ###LEGEND TOP RIGHT CORNER
+        legend.position = "right"); pcoa_Su13_BC12_wlegend
+
+# Plot legend only
+tmp <- ggplot_gtable(ggplot_build(pcoa_Su13_BC12_wlegend)) 
+leg_Su13 <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box") 
+plot.legend_Su13 <- tmp$grobs[[leg]] 
+```
+
+```{r Correlation between Aug14 experiment and July13 field PA vs FL preference}
+# subset only PA and FL samples, both from the Aug14 experiment as well as field samples 2013
+physeq.PAFL <- subset_samples(physeq.all, Group == "Experiment" & Treatment == "FL" | Group == "Experiment" &  Treatment == "PA" | Station =="MM110.DCMD" | Station == "MM15.DN")
+physeq.PAFL <- prune_taxa(taxa_sums(physeq.PAFL) > 0, physeq.PAFL)
+
+# Prune out rare taxa
+# calculate average number of reads in non-scaled data 
+mean(sample_sums(physeq.PAFL))
+
+# Decided not to prune any sequences based on abundance for comparison of fraction preference
+a <- apply(otu_table(physeq.PAFL), MARGIN = 1, function(x) {mean(x)} )
+keep <- a > 0
+physeq.PAFL.prune <- prune_taxa(keep, physeq.PAFL)
+ntaxa(physeq.PAFL.prune) 
+
+##plot FL:PA ratios Jul13 vs Aug14
+# first crerate new phyloseq objects for Jul13 and Aug14 separately
+physeq.PAFL.prune.Jul13 <- subset_samples(physeq.PAFL.prune, Group == "Field.LM")
+physeq.PAFL.prune.Aug14 <- subset_samples(physeq.PAFL.prune, Group == "Experiment")
+
+#now run DEseq to get log2fold ratios for Jul13
+qmexp.PAvsFL.Jul13.deseq <- phyloseq_to_deseq2(physeq.PAFL.prune.Jul13, ~Station+Treatment)
+qmexp.PAvsFL.Jul13.deseq = DESeq(qmexp.PAvsFL.Jul13.deseq, test = "Wald", fitType = "parametric", betaPrior=FALSE)
+
+# Summarize results
+res = data.frame(results(qmexp.PAvsFL.Jul13.deseq, cooksCutoff = FALSE,contrast=c("Treatment","FL","PA")))
+res = data.frame(OTU = row.names(res), res)
+alpha = 1
+sigtab <-
+  res %>%
+    filter(padj < alpha) 
+sigtab.PAvsFL.Jul13 <- cbind(sigtab, 
+  as(tax_table(physeq.PAFL.prune.Jul13)[sigtab$OTU, ], "matrix"))
+
+#calculate average abundance acorss all Summer PA vs FL datasets to scale geom_point in plot
+plotvalue.PAFL.Jul13 <- data.frame(data.frame(tax_table(physeq.PAFL))$Species,as.vector(as.numeric(taxa_sums(physeq.PAFL)/sum(sample_sums(physeq.PAFL))*100)^0.25))
+colnames(plotvalue.PAFL.Jul13) <- c("species","abundance")
+row.names(plotvalue.PAFL.Jul13) <- plotvalue.PAFL.Jul13$species
+plotvalue.PAFL.Jul13 <- plotvalue.PAFL.Jul13[row.names(plotvalue.PAFL.Jul13) %in% sigtab.PAvsFL.Jul13$Species, ]
+sigtab.PAvsFL.Jul13 <- cbind(sigtab.PAvsFL.Jul13,plotvalue.PAFL.Jul13[sigtab.PAvsFL.Jul13$OTU, ])
+sigtab.PAvsFL.Jul13$sig <- as.factor((sigtab.PAvsFL.Jul13$padj<0.05)*1)
+
+#now run DEseq to get log2fold ratios for Aug14
+qmexp.PAvsFL.Aug14.deseq <- phyloseq_to_deseq2(physeq.PAFL.prune.Aug14, ~Treatment)
+qmexp.PAvsFL.Aug14.deseq = DESeq(qmexp.PAvsFL.Aug14.deseq, test = "Wald", fitType = "parametric", betaPrior=FALSE)
+
+# Summarize results
+res = data.frame(results(qmexp.PAvsFL.Aug14.deseq, cooksCutoff = FALSE,contrast=c("Treatment","FL","PA")))
+res = data.frame(OTU = row.names(res), res)
+alpha = 1
+sigtab <-
+  res %>%
+    filter(padj < alpha) 
+sigtab.PAvsFL.Aug14 <- cbind(sigtab, 
+  as(tax_table(physeq.PAFL.prune.Aug14)[sigtab$OTU, ], "matrix"))
+
+#calculate average abundance acorss all Summer PA vs FL datasets to scale geom_point in plot
+plotvalue.PAFL.Aug14 <- data.frame(data.frame(tax_table(physeq.PAFL))$Species,as.vector(as.numeric(taxa_sums(physeq.PAFL)/sum(sample_sums(physeq.PAFL))*100)^0.25))
+colnames(plotvalue.PAFL.Aug14) <- c("species","abundance")
+row.names(plotvalue.PAFL.Aug14) <- plotvalue.PAFL.Aug14$species
+plotvalue.PAFL.Aug14 <- plotvalue.PAFL.Aug14[row.names(plotvalue.PAFL.Aug14) %in% sigtab.PAvsFL.Aug14$Species, ]
+sigtab.PAvsFL.Aug14 <- cbind(sigtab.PAvsFL.Aug14,plotvalue.PAFL.Aug14[sigtab.PAvsFL.Aug14$OTU, ])
+sigtab.PAvsFL.Aug14$sig <- as.factor((sigtab.PAvsFL.Aug14$padj<0.05)*1)
+
+#next step, make dataframes and correlate log2fold ratios Jul13 vs Aug14 
+PAFL.Jul13.df <- select(sigtab.PAvsFL.Jul13,OTU,log2FoldChange)
+PAFL.Aug14.df <- select(sigtab.PAvsFL.Aug14,OTU,log2FoldChange,Phylum,Class,Order,Family,Genus,Tribe,abundance,sig)
+cor.PAFL.df <- merge(PAFL.Jul13.df,PAFL.Aug14.df,by="OTU")  
+colnames(cor.PAFL.df)<-c("OTU","log2FoldChangeFLPAJul13","log2FoldChangeFLPAAug14","Phylum","Class","Order","Family","Genus","Tribe","abundance","sig")
+cor(cor.PAFL.df$log2FoldChangeFLPAAug14,cor.PAFL.df$log2FoldChangeFLPAJul13,method="pearson")
+
+# Fit a linear model
+fit_PAFL <- lm(log2FoldChangeFLPAJul13 ~ log2FoldChangeFLPAAug14, data = cor.PAFL.df)
+# Grab model outputs
+fit_PAFL_pvalue <-summary(fit_PAFL)$coef[2,4]
+fit_PAFL_r2 <- summary(fit_PAFL)$r.squared
+
+#plot with phylum colors
+pdf(file="Figures/Rplot_corPAFLJul13vsAug14_Phylum.pdf", width= 7, height=7, pointsize= 8, colormodel="cmyk", useDingbats = FALSE)
+cor.FLPA.Aug14vsJul13plot <- ggplot(cor.PAFL.df,aes(x = log2FoldChangeFLPAAug14, y = log2FoldChangeFLPAJul13, size = abundance)) + 
+geom_vline(aes(xintercept = 0), colour="grey", linetype = "longdash") +
+geom_hline(aes(yintercept = 0), colour="grey", linetype = "longdash") +
+  geom_point(alpha=0.7,aes(shape=sig)) +
+    scale_shape_manual(name = "p-value", breaks = c("0", "1"), 
+                    labels = c("p>0.05", "p<0.05"),
+                    values = c("0" = 21, "1"= 19)) +
+ylab("log2fold(FL/PA) Jul13 Field") + xlab("log2fold(FL/PA) Aug14 Experiment") + ggtitle("Experimental water 2014 0.22-3/3-153 micron vs\nField water 2013 0.22-3/3-20 micron fraction preference") +
+annotate("text",x = -1,y = -3, size = 3, label = paste("R2 =", round(fit_PAFL_r2, digits = 2))) + geom_smooth(method = "lm", size = 1) +
+theme(plot.title = element_text(face="bold", size=8),  #Set the plot title
+        axis.text.x = element_text(colour="black", vjust=0.5, size=8), 
+        axis.text.y = element_text(colour="black", vjust=0.5, size=8),
+        axis.title.x = element_text(face="bold", size=8),
+        axis.title.y = element_text(face="bold", size=8),
+        legend.title = element_text(size=6, face="bold"),
+        legend.text = element_text(size = 6),legend.position="none")
+cor.FLPA.Aug14vsJul13plot
+dev.off()
+```
+
+```{r final figure S2}
+library(grid)
+library(gridExtra)
+
+pdf(file="Figures/Rplot_Jul13ExpFieldpcoa+corwPAFL_Phylum.pdf", width= 7, height=3.5, pointsize= 8, colormodel="cmyk", useDingbats = FALSE)
+grid.arrange(pcoa_Su13_BC12_wlegend,cor.FLPA.Aug14vsJul13plot,ncol=2)
+dev.off()
+
+```
+
