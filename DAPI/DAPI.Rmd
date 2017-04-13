@@ -1,0 +1,1227 @@
+---
+title: "Mussel Feeding Experiment"
+author: "Edna Chiang"
+date: "March 1, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+set.seed(1)
+```
+
+## Notes
+Cell size measurements don't come from the exact ImageJ file as the cell counts.
+For cell counts, as long as ImageJ recognized each cell with a small dot, I used the file; however, this doesn't provide a good measurement of cell size. To more accurately measure size I had to change the threshold so that the majority of a cell's mass was recognized by ImageJ. This caused a lot more noise in the photo, which I tried to decrease by increasing the minimum pixel cluster size counted by the program; however, noise still caused some inaccuracy in the data by viewing some cells larger than they actually were and by counting parts of the background.  
+  
+
+
+```{r load.file}
+library(ggplot2)
+library(RColorBrewer)
+library(dplyr)
+library(lawstat)
+library(grid)
+library(gridExtra)
+
+## For dplyr notes: http://www.sharpsightlabs.com/dplyr-intro-data-manipulation-with-r/
+## For loop notes: http://www.programiz.com/r-programming/for-loop
+
+setwd("/Users/vdenef/Documents/UMich/Digital_Notebooks/GitHub/QMexpall/DAPI/")
+
+Size <- read.csv("Cell Size.csv", header=TRUE)
+Size <- data.frame(Size)
+
+Size$Sample <- factor(Size$Sample, levels=c("C1T0", "C3T0", "C1T3", "C2T3", "C3T3", "E1T0", "E3T0",
+                                            "E1T3", "E2T3", "E3T3"))
+Size$Time <- factor(Size$Time, levels=c("Start","End"))
+Size$Experiment <- factor(Size$Experiment, levels=c("Control Start", "Control End", "Mussel Start",
+                                                    "Mussel End"))
+
+Counts <- read.csv("Cell Counts.csv", header=T)
+Counts <- data.frame(Counts)
+Counts$Sample <- factor(Counts$Sample, levels=c("C1T0", "C3T0", "C1T3", "C2T3", "C3T3", "E1T0", "E3T0",
+                                                "E1T3", "E2T3", "E3T3"))
+Counts$Time <- factor(Counts$Time, levels=c("Start","End"))
+Counts$Experiment <- factor(Counts$Experiment, levels=c("Control Start", "Control End", "Mussel Start",
+                                                        "Mussel End"))
+```
+ 
+ 
+## Check Cell Count Data for Normality
+```{r count normal}
+#### Is the COUNT data normal?
+qqnorm(Counts$Cells_mL_gen)
+qqline(Counts$Cells_mL_gen)
+ks.test(Counts$Cells_mL_gen, "pnorm", mean=mean(Counts$Cells_mL_gen), sd=sd(Counts$Cells_mL_gen))
+print("Cell count data is normally distributed", quote=FALSE)
+```
+
+
+## Check Cell Size Data for Normality
+```{r normal}
+
+##### Is the SIZE data normal?
+qqnorm(Size$Area)
+qqline(Size$Area)
+ks.test(Size$Area, "pnorm", mean=mean(Size$Area), sd=sd(Size$Area))
+print("Cell size data is not normally distributed", quote=FALSE)
+
+Size$AreaLog <- log(Size$Area)
+    #Log data to make it (hopefully) normal
+
+
+print("Log transform data")
+##### Is the SIZE data normal?
+qqnorm(Size$AreaLog)
+qqline(Size$AreaLog)
+ks.test(Size$AreaLog, "pnorm", mean=mean(Size$AreaLog), sd=sd(Size$AreaLog))
+print("Cell size data is not normally distributed", quote = FALSE)
+
+
+```
+  
+## Data Summary
+```{r organize}
+controlstart <- which(Size$Treatment=="Control" & Size$Time=="Start")
+musselstart <- which(Size$Treatment=="Mussel" & Size$Time=="Start")
+controlend <- which(Size$Treatment=="Control" & Size$Time=="End")
+musselend <- which(Size$Treatment=="Mussel" & Size$Time=="End")
+```
+
+
+**Control Start**
+```{r controlstartsum}
+print("Cell Count Summary (cells/mL)", quote=F)
+summary(Counts$Cells_mL_gen[Counts$Experiment=="Control Start"])
+print("Cell Size Summary (um^2)", quote=F)
+summary(Size$Area[controlstart])
+print("Number of size counts", quote=F)
+length(controlstart)
+```
+
+
+**Control End**
+```{r controlendsum}
+print("Cell Count Summary (cells/mL)", quote=F)
+summary(Counts$Cells_mL_gen[Counts$Experiment=="Control End"])
+print("Cell Size Summary (um^2)", quote=F)
+summary(Size$Area[controlend])
+print("Number of size counts", quote=F)
+length(controlend)
+```
+
+
+**Mussel Start**
+```{r musselstartsum}
+print("Cell Count Summary (cells/mL)", quote=F)
+summary(Counts$Cells_mL_gen[Counts$Experiment=="Mussel Start"])
+print("Cell Size Summary (um^2)", quote=F)
+summary(Size$Area[musselstart])
+print("Number of size counts", quote=F)
+length(musselstart)
+```
+
+
+**Mussel End**
+```{r musselendsum}
+print("Cell Count Summary (cells/mL)", quote=F)
+summary(Counts$Cells_mL_gen[Counts$Experiment=="Mussel End"])
+print("Cell Size Summary (um^2)", quote=F)
+summary(Size$Area[musselend])
+print("Number of size counts", quote=F)
+length(musselend)
+```
+    
+    
+There are 3 End samples and 2 Start samples, so there are substaintly more End counts compared to Start counts.  
+  
+## Cell Count Analyses
+```{r count sumvis}
+#### Cell Count Boxplot
+plot_count <- ggplot(data=Counts, aes(x=Experiment, y=Cells_mL_gen)) + geom_boxplot(outlier.size = 0)  +  geom_point(aes(color=Experiment),alpha=0.5, position = position_jitter()) +
+  scale_fill_brewer(palette="Set3") + ylab("Cell Number (cells/mL)") + ggtitle("Experiment Cell Number") +
+  xlab("Sample")
+
+levene.test(y=Counts$Cells_mL_gen, group=Counts$Experiment)
+print("Experiment cell count variances are not significantly different")
+
+anovacount <- aov(Cells_mL_gen~Experiment, data=Counts)
+summary(anovacount)
+print("Experiment cell count means are significantly different")
+
+cs <- which(Counts$Experiment=="Control Start")
+ce <- which(Counts$Experiment=="Control End")
+ms <- which(Counts$Experiment=="Mussel Start")
+me <- which(Counts$Experiment=="Mussel End")
+
+t.test(x=Counts$Cells_mL_gen[cs], y=Counts$Cells_mL_gen[ce])
+print("There is no significant change in cell number between Control Start & End")
+t.test(x=Counts$Cells_mL_gen[cs], y=Counts$Cells_mL_gen[ms])
+print("There is no significant difference in cell number between Control & Mussel Start")
+t.test(x=Counts$Cells_mL_gen[ms], y=Counts$Cells_mL_gen[me], alternative="greater")
+print("Cell number in Mussel Start is significantly larger than that in Mussel End")
+
+```
+
+## Cell Size
+1um = 15 pixels  
+1um^2 = 225 pixels^2
+```{r size sumvis}
+#### This removes the extremely large cell size measures
+big <- which(Size$Area>5)  ## Gives indices of TRUE
+Size$AreaTrans <- Size$Area
+Size$AreaTrans[big] <- 5
+
+#### Cell Size Summary
+print("Cell Size Summary (um^2)")
+summary(Size$Area)
+
+#### Cell Size Boxplot
+ggplot(data=Size, aes(x=Sample, y=AreaTrans, fill=Experiment)) + geom_boxplot(outlier.size = 0)  +  geom_point(aes(color=Experiment),alpha=0.5, position = position_jitter()) +
+  scale_fill_brewer(palette="Set3") + ylab("Area (um^2)") + ggtitle("Sample Area Boxplot")
+print("Y-axis max is 5+ um^2", quotes="F")
+
+plot_size <- ggplot(data=Size, aes(x=Experiment, y=log(AreaTrans,2))) + geom_boxplot(outlier.size = 0)  +  geom_point(aes(color=Experiment),alpha=0.05, position = position_jitter()) +
+  scale_fill_brewer(palette="Set3") + ylab("log2(Area (um^2))") + ggtitle("Experiment Cell Size") +
+  xlab("Sample")
+```
+  
+```{r supplemental figure for paper}
+library(grid)
+library(gridExtra)
+
+pdf(file="Rplot_DAPIcountssupplement.pdf", width= 7, height=3.5, pointsize= 8, colormodel="cmyk", useDingbats = FALSE)
+grid.arrange(plot_count,plot_size,ncol=2)
+dev.off()
+```
+
+## Sample Cell Size Histogram
+Scaled histogram: cell size counts were divided by mean sample count per sample.
+```{r unscaled histogram}
+sampcolors <- c(C1T0="#a6cee3", C3T0="#1f78b4", C1T3="#c7e9c0", C2T3="#74c476", C3T3="#006d2c",
+                E1T0="#fa9fb5", E3T0="#cb181d", E1T3="#fcae91", E2T3="#fb6a4a", E3T3="#67000d")
+
+#### Create median size value for each sample
+medsamp <- c(median(Size$Area[Size$Sample=="C1T0"]), median(Size$Area[Size$Sample=="C3T0"]),
+             median(Size$Area[Size$Sample=="C1T3"]), median(Size$Area[Size$Sample=="C2T3"]),
+             median(Size$Area[Size$Sample=="C3T3"]), median(Size$Area[Size$Sample=="E1T0"]),
+             median(Size$Area[Size$Sample=="E3T0"]), median(Size$Area[Size$Sample=="E1T3"]),
+             median(Size$Area[Size$Sample=="E2T3"]), median(Size$Area[Size$Sample=="E3T3"]))
+medsamp <- data.frame(medsamp)
+medsamp$Median <- medsamp$medsamp
+medsamp$medsamp <- NULL
+medsamp$Sample <- c("C1T0", "C3T0", "C1T3", "C2T3", "C3T3", "E1T0", "E3T0", "E1T3", "E2T3", "E3T3")
+medsamp$Sample <- factor(medsamp$Sample, levels=c("C1T0", "C3T0", "C1T3", "C2T3", "C3T3", "E1T0",
+                                                  "E3T0", "E1T3", "E2T3", "E3T3"))
+
+# #### Histogram of data (skewed)
+# print("Black line represents median of each sample", quote=F)
+# ggplot(data=Size, aes(x=AreaTrans, fill=Sample)) + geom_histogram() + facet_grid(Sample~.) +
+#   scale_fill_brewer(palette="Paired") + xlab("Area (pixels^2)") + ggtitle("Sample Cell Size") +
+#   geom_vline(aes(xintercept=Median), medsamp) + scale_fill_manual(values = sampcolors)
+# 
+# 
+# #### Histogram with log scale
+# print("Black line represents median of each sample", quote=F)
+# ggplot(data=Size, aes(x=Area, fill=Sample)) + geom_histogram() + facet_grid(Sample~.) +
+#   scale_x_log10() + scale_fill_brewer(palette="Paired") + xlab("Area (pixels^2)") +
+#   ggtitle("Sample Cell Size (Log Scale)") + geom_vline(aes(xintercept=Median), medsamp) +
+#   scale_fill_manual(values = sampcolors)
+
+
+    
+################################### Scaled Sample Cell Size Histogram  ###################
+###Cell size counts were divided by mean sample count per sample.
+
+sampcolors <- c(C1T0="#a6cee3", C3T0="#1f78b4", C1T3="#c7e9c0", C2T3="#74c476", C3T3="#006d2c",
+                E1T0="#fa9fb5", E3T0="#cb181d", E1T3="#fcae91", E2T3="#fb6a4a", E3T3="#67000d")
+
+#### Scale cell size by average sample counts
+## Create dataframe of average sample counts
+avgsamp <- c(mean(Counts$Cells[Counts$Sample=="C1T0"]), mean(Counts$Cells[Counts$Sample=="C3T0"]),
+             mean(Counts$Cells[Counts$Sample=="C1T3"]), mean(Counts$Cells[Counts$Sample=="C2T3"]),
+             mean(Counts$Cells[Counts$Sample=="C3T3"]), mean(Counts$Cells[Counts$Sample=="E1T0"]),
+             mean(Counts$Cells[Counts$Sample=="E3T0"]), mean(Counts$Cells[Counts$Sample=="E1T3"]),
+             mean(Counts$Cells[Counts$Sample=="E2T3"]), mean(Counts$Cells[Counts$Sample=="E3T3"]))
+avgsamp <- data.frame(avgsamp)
+avgsamp$Mean <- avgsamp$avgsamp
+avgsamp$avgsamp <- NULL
+avgsamp$Sample <- c("C1T0", "C3T0", "C1T3", "C2T3", "C3T3", "E1T0", "E3T0", "E1T3", "E2T3", "E3T3")
+avgsamp$Sample <- factor(medsamp$Sample, levels=c("C1T0", "C3T0", "C1T3", "C2T3", "C3T3", "E1T0",
+                                                  "E3T0", "E1T3", "E2T3", "E3T3"))
+
+## Divide cell area (<600 pixels^2) by average cell count
+x <- which(Size$Sample=="C1T0")
+Size$AreaScale <- NA
+Size$AreaScale[1:max(x)] <- Size$AreaTrans[1:max(x)]/avgsamp[1,1]
+y <- which(Size$Sample=="C3T0")
+Size$AreaScale[max(x+1):max(y)] <- Size$AreaTrans[max(x+1):max(y)]/avgsamp[2,1]
+x <- which(Size$Sample=="E1T0")
+Size$AreaScale[max(y+1):max(x)] <- Size$AreaTrans[max(y+1):max(x)]/avgsamp[6,1]
+y <- which(Size$Sample=="E3T0")
+Size$AreaScale[max(x+1):max(y)] <- Size$AreaTrans[max(x+1):max(y)]/avgsamp[7,1]
+x <- which(Size$Sample=="C1T3")
+Size$AreaScale[max(y+1):max(x)] <- Size$AreaTrans[max(y+1):max(x)]/avgsamp[3,1]
+y <- which(Size$Sample=="C2T3")
+Size$AreaScale[max(x+1):max(y)] <- Size$AreaTrans[max(x+1):max(y)]/avgsamp[4,1]
+x <- which(Size$Sample=="C3T3")
+Size$AreaScale[max(y+1):max(x)] <- Size$AreaTrans[max(y+1):max(x)]/avgsamp[5,1]
+y <- which(Size$Sample=="E1T3")
+Size$AreaScale[max(x+1):max(y)] <- Size$AreaTrans[max(x+1):max(y)]/avgsamp[8,1]
+x <- which(Size$Sample=="E2T3")
+Size$AreaScale[max(y+1):max(x)] <- Size$AreaTrans[max(y+1):max(x)]/avgsamp[9,1]
+y <- which(Size$Sample=="E3T3")
+Size$AreaScale[max(x+1):max(y)] <- Size$AreaTrans[max(x+1):max(y)]/avgsamp[10,1]
+
+#### Create median value for scaled cell size
+medscale <- c(median(Size$AreaScale[Size$Sample=="C1T0"]), median(Size$AreaScale[Size$Sample=="C3T0"]),
+             median(Size$AreaScale[Size$Sample=="C1T3"]), median(Size$AreaScale[Size$Sample=="C2T3"]),
+             median(Size$AreaScale[Size$Sample=="C3T3"]), median(Size$AreaScale[Size$Sample=="E1T0"]),
+             median(Size$AreaScale[Size$Sample=="E3T0"]), median(Size$AreaScale[Size$Sample=="E1T3"]),
+             median(Size$AreaScale[Size$Sample=="E2T3"]), median(Size$AreaScale[Size$Sample=="E3T3"]))
+medscale <- data.frame(medscale)
+medscale$Median <- medscale$medscale
+medscale$medscale <- NULL
+medscale$Sample <- c("C1T0", "C3T0", "C1T3", "C2T3", "C3T3", "E1T0", "E3T0", "E1T3", "E2T3", "E3T3")
+medscale$Sample <- factor(medscale$Sample, levels=c("C1T0", "C3T0", "C1T3", "C2T3", "C3T3", "E1T0",
+                                                  "E3T0", "E1T3", "E2T3", "E3T3"))
+
+# #### Histogram of scaled cell size (skewed)
+# ggplot(data=Size, aes(x=AreaScale, fill=Sample)) + geom_histogram() + facet_grid(Sample~.) +
+#   scale_fill_brewer(palette="Paired") + xlab("Scaled Area") + ggtitle("Scaled Sample Cell Size") +
+#   geom_vline(aes(xintercept=Median), medscale) + scale_fill_manual(values = sampcolors)
+
+
+#### Histogram of scaled data on log scale ####
+
+## Divide cell area (original data) by average cell count
+x <- which(Size$Sample=="C1T0")
+Size$AreaOrigScale <- NA
+Size$AreaOrigScale[1:max(x)] <- Size$Area[1:max(x)]/avgsamp[1,1]
+y <- which(Size$Sample=="C3T0")
+Size$AreaOrigScale[max(x+1):max(y)] <- Size$Area[max(x+1):max(y)]/avgsamp[2,1]
+x <- which(Size$Sample=="E1T0")
+Size$AreaOrigScale[max(y+1):max(x)] <- Size$Area[max(y+1):max(x)]/avgsamp[6,1]
+y <- which(Size$Sample=="E3T0")
+Size$AreaOrigScale[max(x+1):max(y)] <- Size$Area[max(x+1):max(y)]/avgsamp[7,1]
+x <- which(Size$Sample=="C1T3")
+Size$AreaOrigScale[max(y+1):max(x)] <- Size$Area[max(y+1):max(x)]/avgsamp[3,1]
+y <- which(Size$Sample=="C2T3")
+Size$AreaOrigScale[max(x+1):max(y)] <- Size$Area[max(x+1):max(y)]/avgsamp[4,1]
+x <- which(Size$Sample=="C3T3")
+Size$AreaOrigScale[max(y+1):max(x)] <- Size$Area[max(y+1):max(x)]/avgsamp[5,1]
+y <- which(Size$Sample=="E1T3")
+Size$AreaOrigScale[max(x+1):max(y)] <- Size$Area[max(x+1):max(y)]/avgsamp[8,1]
+x <- which(Size$Sample=="E2T3")
+Size$AreaOrigScale[max(y+1):max(x)] <- Size$Area[max(y+1):max(x)]/avgsamp[9,1]
+y <- which(Size$Sample=="E3T3")
+Size$AreaOrigScale[max(x+1):max(y)] <- Size$Area[max(x+1):max(y)]/avgsamp[10,1]
+
+#### Create median value for scaled cell size
+medorigscale <- c(median(Size$AreaScale[Size$Sample=="C1T0"]),
+                  median(Size$AreaScale[Size$Sample=="C3T0"]),
+                  median(Size$AreaScale[Size$Sample=="C1T3"]),
+                  median(Size$AreaScale[Size$Sample=="C2T3"]),
+                  median(Size$AreaScale[Size$Sample=="C3T3"]),
+                  median(Size$AreaScale[Size$Sample=="E1T0"]),
+                  median(Size$AreaScale[Size$Sample=="E3T0"]),
+                  median(Size$AreaScale[Size$Sample=="E1T3"]),
+                  median(Size$AreaScale[Size$Sample=="E2T3"]),
+                  median(Size$AreaScale[Size$Sample=="E3T3"]))
+medorigscale <- data.frame(medorigscale)
+medorigscale$Median <- medorigscale$medorigscale
+medorigscale$medscale <- NULL
+medorigscale$Sample <- c("C1T0", "C3T0", "C1T3", "C2T3", "C3T3", "E1T0", "E3T0", "E1T3", "E2T3", "E3T3")
+medorigscale$Sample <- factor(medorigscale$Sample, levels=c("C1T0", "C3T0", "C1T3", "C2T3", "C3T3",
+                                                            "E1T0", "E3T0", "E1T3", "E2T3", "E3T3"))
+
+# #### Histogram of scaled cell size with log-scaled axis
+# ggplot(data=Size, aes(x=AreaOrigScale, fill=Sample)) + geom_histogram() + facet_grid(Sample~.) +
+#   scale_fill_brewer(palette="Paired") + xlab("Scaled Area") + ggtitle("Scaled Sample Cell Size") +
+#   geom_vline(aes(xintercept=Median), medorigscale) + scale_fill_manual(values = sampcolors) +
+#   scale_x_log10()
+
+
+
+
+
+###### http://www.cookbook-r.com/Graphs/Multiple_graphs_on_one_page_(ggplot2)/
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+  library(grid)
+
+  # Make a list from the ... arguments and plotlist
+  plots <- c(list(...), plotlist)
+
+  numPlots = length(plots)
+
+  # If layout is NULL, then use 'cols' to determine layout
+  if (is.null(layout)) {
+    # Make the panel
+    # ncol: Number of columns of plots
+    # nrow: Number of rows needed, calculated from # of cols
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                    ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+
+ if (numPlots==1) {
+    print(plots[[1]])
+
+  } else {
+    # Set up the page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+
+    # Make each plot, in the correct location
+    for (i in 1:numPlots) {
+      # Get the i,j matrix positions of the regions that contain this subplot
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+
+######
+skeworig <-ggplot(data=Size, aes(x=AreaTrans, fill=Sample)) + geom_histogram() + facet_grid(Sample~.) +
+   scale_fill_brewer(palette="Paired") + xlab("Area (pixels^2)") + ggtitle("Sample Cell Size") +
+   geom_vline(aes(xintercept=Median), medsamp) + scale_fill_manual(values = sampcolors)
+skewscale <- ggplot(data=Size, aes(x=AreaScale, fill=Sample)) + geom_histogram() +
+   facet_grid(Sample~.) + scale_fill_brewer(palette="Paired") + xlab("Scaled Area") +
+   ggtitle("Scaled Sample Cell Size") + geom_vline(aes(xintercept=Median), medscale) +
+   scale_fill_manual(values = sampcolors)
+#grid.arrange(skeworig, skewscale)
+multiplot(skeworig, skewscale, cols=2)
+#http://www.cookbook-r.com/Graphs/Multiple_graphs_on_one_page_(ggplot2)/
+
+skewlogorig <- ggplot(data=Size, aes(x=Area, fill=Sample)) + geom_histogram() + facet_grid(Sample~.) +
+  scale_x_log10() + scale_fill_brewer(palette="Paired") + xlab("Area (log scale)") +
+  ggtitle("Sample Cell Size (Log Scale)") + geom_vline(aes(xintercept=Median), medsamp) +
+  scale_fill_manual(values = sampcolors)
+skewlogscale <- ggplot(data=Size, aes(x=AreaOrigScale, fill=Sample)) + geom_histogram() +
+  facet_grid(Sample~.) + scale_fill_brewer(palette="Paired") + xlab("Scaled Area (log scale)") +
+  ggtitle("Scaled Sample Cell Size (Log Scale)") + geom_vline(aes(xintercept=Median), medorigscale) + 
+  scale_fill_manual(values = sampcolors) + scale_x_log10()
+multiplot(skewlogorig, skewlogscale, cols=2)
+
+```
+
+
+
+
+
+
+
+
+
+## Experiment Histogram
+Experiment cell size counts were scaled by number of replicates.  
+Each histogram bin was divided by number of replicates.
+* Start experiments divided by 2
+* End experiments divided by 3
+```{r orig exp hist}
+#### Create median value for each experiment
+medtt <- c(median(Size$Area[controlstart]), median(Size$Area[controlend]),
+           median(Size$Area[musselstart]), median(Size$Area[musselend]))
+medtt <- data.frame(medtt)
+medtt$Median <- medtt$medtt
+medtt$medtt <- NULL
+medtt$Treatment <- c("Control", "Control", "Mussel", "Mussel")
+medtt$Time <- c("Start", "End", "Start", "End")
+medtt$Treatment <- factor(medtt$Treatment, levels=c("Control", "Mussel"))
+medtt$Time <- factor(medtt$Time, levels=c("Start", "End"))
+
+# #### Histogram of unscaled data (skewed)
+# print("Black line represents median of each treatment", quote=F)
+# ggplot(data=Size, aes(x=AreaTrans, fill=Treatment)) + geom_histogram() +
+#   facet_grid(Treatment~Time) + ggtitle("Treatment Cell Size") +
+#   geom_vline(aes(xintercept=Median), medtt)
+# 
+# #### Histogram of unscaled data with log scale
+# print("Black line represents median of each treatment", quote=F)
+# ggplot(data=Size, aes(x=Area, fill=Treatment)) + geom_histogram() + facet_grid(Treatment~Time) +
+#   scale_x_log10() + ggtitle("Treatment Cell Size") + geom_vline(aes(xintercept=Median), medtt)
+
+
+
+
+
+
+
+#### Scaled Experiment Histogram
+
+#### Histogram of scaled data (skewed)
+scalmedtt <- c(median(Size$AreaScale[controlstart]), median(Size$AreaScale[controlend]),
+           median(Size$AreaScale[musselstart]), median(Size$AreaScale[musselend]))
+scalmedtt <- data.frame(scalmedtt)
+scalmedtt$Median <- scalmedtt$scalmedtt
+scalmedtt$medtt <- NULL
+scalmedtt$Treatment <- c("Control", "Control", "Mussel", "Mussel")
+scalmedtt$Time <- c("Start", "End", "Start", "End")
+scalmedtt$Treatment <- factor(scalmedtt$Treatment, levels=c("Control", "Mussel"))
+scalmedtt$Time <- factor(scalmedtt$Time, levels=c("Start", "End"))
+
+
+#### Subset out each experiment
+cstrim <- Size %>%                          # Select dataframe Size, THEN
+  filter(Experiment=="Control Start") %>%   # Filter out Control Start samples, THEN
+  arrange(AreaScale)                        # Arrange samples by AreScale
+cetrim <- Size %>%
+  filter(Experiment=="Control End") %>%
+  arrange(AreaScale)
+mstrim <- Size %>%
+  filter(Experiment=="Mussel Start") %>%
+  arrange(AreaScale)
+metrim <- Size %>%
+  filter(Experiment=="Mussel End") %>%
+  arrange(AreaScale)
+
+#### Scale experiment subsets (start = div by 2, end = div by 3)
+## First plot the graph that you want to scale & print out the bin number onto the image using the code:
+      # + stat_bin(bins=30, aes(y=..count.., label=..count..), geom="text", vjust=-.5) 
+
+          # tiff(file="test.tiff", width= 21, height=6.5, units = "in", res = 175)
+          # ggplot(data=Size, aes(x=AreaScale, fill=Treatment)) + geom_histogram() + facet_grid(Treatment~Time) + ggtitle("Treatment Cell Size") + geom_vline(aes(xintercept=Median), scalmedtt) + stat_bin( aes(y=..count.., label=..count..), geom="text", vjust=-.5) 
+          #dev.off()
+## Then hand-copy down bin size (save image in a large size to see numbers)
+## Divide bin size by replicates (start = 2, end = 3), rounding
+## The calculated number will then be subtracted from the experiment subsets, starting from largest area
+      # and going to smallest area -> this scales the # of counts in each bin
+
+### Scale Control Start
+# Largest bin is 29, so remove 15
+x <- nrow(cstrim)
+#nrow(cstrim) = 4615
+cstrim <- cstrim[-(x-15+1):-x,] # Remove 15 rows
+#nrow(cstrim) = 4600
+x <- x-29
+
+# Next bin is 6, so remove 3
+cstrim <- cstrim[-(x-3+1):-x,] # Remove 3 rows
+#nrow(cstrim) = 4597
+x <- x-6
+
+# Next bin is 8, so remove 4
+cstrim <- cstrim[-(x-4+1):-x,] # Remove 4 rows
+#nrow(cstrim) = 4593
+x <- x-8
+
+# Next bin is 3, so remove 2
+cstrim <- cstrim[-(x-2+1):-x,] # Remove 2 rows
+#nrow(cstrim) = 4591
+x <- x-3
+
+# Next bin is 57, so remove 29
+cstrim <- cstrim[-(x-29+1):-x,] # Remove 29 rows
+#nrow(cstrim) = 4562
+x <- x-57
+
+# Next bin is 12, so remove 6
+cstrim <- cstrim[-(x-6+1):-x,] # Remove 6 rows
+#nrow(cstrim) = 4556
+x <- x-12
+
+# Next bin is 29, so remove 15
+cstrim <- cstrim[-(x-15+1):-x,] # Remove 15 rows
+#nrow(cstrim) = 4541
+x <- x-29
+
+# Next bin is 18, so remove 9
+cstrim <- cstrim[-(x-9+1):-x,] # Remove 15 rows
+#nrow(cstrim) = 4532
+x <- x-18
+
+# Next bin is 25, so remove 13
+cstrim <- cstrim[-(x-13+1):-x,] # Remove 13 rows
+#nrow(cstrim) = 4519
+x <- x-25
+
+# Next bin is 50, so remove 25
+cstrim <- cstrim[-(x-25+1):-x,] # Remove 25 rows
+#nrow(cstrim) = 4494
+x <- x-50
+
+# Next bin is 50, so remove 25
+cstrim <- cstrim[-(x-25+1):-x,] # Remove 25 rows
+#nrow(cstrim) = 4469
+x <- x-50
+
+# Next bin is 50, so remove 25
+cstrim <- cstrim[-(x-25+1):-x,] # Remove 25 rows
+#nrow(cstrim) = 4444
+x <- x-50
+
+# Next bin is 78, so remove 39
+cstrim <- cstrim[-(x-39+1):-x,] # Remove 39 rows
+#nrow(cstrim) = 4405
+x <- x-78
+
+# Next bin is 70, so remove 35
+cstrim <- cstrim[-(x-35+1):-x,] # Remove 35 rows
+#nrow(cstrim) = 4370
+x <- x-70
+
+# Next bin is 100, so remove 50
+cstrim <- cstrim[-(x-50+1):-x,] # Remove 50 rows
+#nrow(cstrim) = 4320
+x <- x-100
+
+# Next bin is 130, so remove 65
+cstrim <- cstrim[-(x-65+1):-x,] # Remove 65 rows
+#nrow(cstrim) = 4255
+x <- x-130
+
+# Next bin is 137, so remove 69
+cstrim <- cstrim[-(x-69+1):-x,] # Remove 69 rows
+#nrow(cstrim) = 4118
+x <- x-137
+
+# Next bin is 166, so remove 83
+cstrim <- cstrim[-(x-83+1):-x,] # Remove 83 rows
+#nrow(cstrim) = 4035
+x <- x-166
+
+# Next bin is 207, so remove 104
+cstrim <- cstrim[-(x-104+1):-x,] # Remove 104 rows
+#nrow(cstrim) = 3931
+x <- x-207
+
+# Next bin is 274, so remove 137
+cstrim <- cstrim[-(x-137+1):-x,] # Remove 137 rows
+#nrow(cstrim) = 3794
+x <- x-274
+
+# Next bin is 351, so remove 176
+cstrim <- cstrim[-(x-176+1):-x,] # Remove 176 rows
+#nrow(cstrim) = 3618
+x <- x-351
+
+# Next bin is 484, so remove 242
+cstrim <- cstrim[-(x-242+1):-x,] # Remove 242 rows
+#nrow(cstrim) = 3376
+x <- x-484
+
+# Next bin is 646, so remove 323
+cstrim <- cstrim[-(x-323+1):-x,] # Remove 323 rows
+#nrow(cstrim) = 4405
+x <- x-646
+
+# Next bin is 869, so remove 435
+cstrim <- cstrim[-(x-435+1):-x,] # Remove 435 rows
+#nrow(cstrim) = 4405
+x <- x-869
+
+# Next bin is 766, so remove 383
+cstrim <- cstrim[-(x-383+1):-x,] # Remove 383 rows
+#nrow(cstrim) = 2235
+x <- x-766
+
+
+### Start with Control End
+# Largest bin is 75, so remove 50
+x <- nrow(cetrim)
+#nrow(cetrim) = 7553
+cetrim <- cetrim[-(x-50+1):-x,] # Remove 50 rows
+#nrow(cetrim) = 7503
+x <- x-75
+
+# Next bin is 6, so remove 4
+cetrim <- cetrim[-(x-4+1):-x,] # Remove 4 rows
+#nrow(cetrim) = 7499
+x <- x-6
+
+# Next bin is 124, so remove 83
+cetrim <- cetrim[-(x-83+1):-x,] # Remove 83 rows
+#nrow(cetrim) = 7416
+x <- x-124
+
+# Next bin is 27, so remove 18
+cetrim <- cetrim[-(x-18+1):-x,] # Remove 18 rows
+#nrow(cetrim) = 7398
+x <- x-27
+
+# Next bin is 143, so remove 95
+cetrim <- cetrim[-(x-95+1):-x,] # Remove 95 rows
+#nrow(cetrim) = 7303
+x <- x-143
+
+# Next bin is 52, so remove 35
+cetrim <- cetrim[-(x-35+1):-x,] # Remove 35 rows
+#nrow(cetrim) = 7268
+x <- x-52
+
+# Next bin is 63, so remove 42
+cetrim <- cetrim[-(x-42+1):-x,] # Remove 42 rows
+#nrow(cetrim) = 7226
+x <- x-63
+
+# Next bin is 69, so remove 46
+cetrim <- cetrim[-(x-46+1):-x,] # Remove 46 rows
+#nrow(cetrim) = 7180
+x <- x-69
+
+# Next bin is 81, so remove 54
+cetrim <- cetrim[-(x-54+1):-x,] # Remove 54 rows
+#nrow(cetrim) = 7126
+x <- x-81
+
+# Next bin is 89, so remove 59
+cetrim <- cetrim[-(x-59+1):-x,] # Remove 59 rows
+#nrow(cetrim) = 7067
+x <- x-89
+
+# Next bin is 105, so remove 70
+cetrim <- cetrim[-(x-70+1):-x,] # Remove 70 rows
+#nrow(cetrim) = 6997
+x <- x-105
+
+# Next bin is 134, so remove 89
+cetrim <- cetrim[-(x-89+1):-x,] # Remove 89 rows
+#nrow(cetrim) = 6908
+x <- x-134
+
+# Next bin is 131, so remove 87
+cetrim <- cetrim[-(x-87+1):-x,] # Remove 87 rows
+#nrow(cetrim) = 6821
+x <- x-131
+
+# Next bin is 157, so remove 105
+cetrim <- cetrim[-(x-105+1):-x,] # Remove 105 rows
+#nrow(cetrim) = 6716
+x <- x-157
+
+# Next bin is 170, so remove 113
+cetrim <- cetrim[-(x-113+1):-x,] # Remove 113 rows
+#nrow(cetrim) = 6603
+x <- x-170
+
+# Next bin is 194, so remove 129
+cetrim <- cetrim[-(x-129+1):-x,] # Remove 129 rows
+#nrow(cetrim) = 6474
+x <- x-194
+
+# Next bin is 264, so remove 176
+cetrim <- cetrim[-(x-176+1):-x,] # Remove 176 rows
+#nrow(cetrim) = 6298
+x <- x-264
+
+# Next bin is 304, so remove 203
+cetrim <- cetrim[-(x-203+1):-x,] # Remove 203 rows
+#nrow(cetrim) = 6095
+x <- x-304
+
+# Next bin is 383, so remove 255
+cetrim <- cetrim[-(x-255+1):-x,] # Remove 255 rows
+#nrow(cetrim) = 5840
+x <- x-383
+
+# Next bin is 428, so remove 285
+cetrim <- cetrim[-(x-285+1):-x,] # Remove 285 rows
+#nrow(cetrim) = 5555
+x <- x-428
+
+# Next bin is 595, so remove 397
+cetrim <- cetrim[-(x-397+1):-x,] # Remove 397 rows
+#nrow(cetrim) = 5158
+x <- x-595
+
+# Next bin is 670, so remove 447
+cetrim <- cetrim[-(x-447+1):-x,] # Remove 447 rows
+#nrow(cetrim) = 4711
+x <- x-670
+
+# Next bin is 813, so remove 542
+cetrim <- cetrim[-(x-542+1):-x,] # Remove 542 rows
+#nrow(cetrim) = 4440
+x <- x-813
+
+# Next bin is 770, so remove 513
+cetrim <- cetrim[-(x-513+1):-x,] # Remove 513 rows
+#nrow(cetrim) = 5573
+x <- x-770
+
+# Next bin is 811, so remove 541
+cetrim <- cetrim[-(x-541+1):-x,] # Remove 541 rows
+#nrow(cetrim) = 3386
+x <- x-811
+
+# Next bin is 895, so remove 597
+cetrim <- cetrim[-(x-597+1):-x,] # Remove 326 rows
+#nrow(mstrim) = 2310
+x <- x-895
+
+
+### Start with Mussel Start
+# Largest bin is 57, so remove 29
+x <- nrow(mstrim)
+#nrow(mstrim) = 4629
+mstrim <- mstrim[-(x-29+1):-x,] # Remove 29 rows
+#nrow(mstrim) = 4600
+x <- x-57
+
+# Next bin is 4, so remove 2
+mstrim <- mstrim[-(x-2+1):-x,] # Remove 2 rows
+#nrow(mstrim) = 4598
+x <- x-4
+
+# Next bin is 1, so remove 0
+#mstrim <- mstrim[-(x-2+1):-x,] # Remove 0 rows
+#nrow(mstrim) = 4598
+#x <- x-4
+
+# Next bin is 68, so remove 34
+mstrim <- mstrim[-(x-34+1):-x,] # Remove 34 rows
+#nrow(mstrim) = 4564
+x <- x-68
+
+# Next bin is 20, so remove 10
+mstrim <- mstrim[-(x-10+1):-x,] # Remove 10 rows
+#nrow(mstrim) = 4554
+x <- x-20
+
+# Next bin is 23, so remove 12
+mstrim <- mstrim[-(x-12+1):-x,] # Remove 12 rows
+#nrow(mstrim) = 4542
+x <- x-23
+
+# Next bin is 23, so remove 12
+mstrim <- mstrim[-(x-12+1):-x,] # Remove 12 rows
+#nrow(mstrim) = 4530
+x <- x-23
+
+# Next bin is 32, so remove 16
+mstrim <- mstrim[-(x-16+1):-x,] # Remove 16 rows
+#nrow(mstrim) = 4514
+x <- x-32
+
+# Next bin is 28, so remove 14
+mstrim <- mstrim[-(x-14+1):-x,] # Remove 14 rows
+#nrow(mstrim) = 4500
+x <- x-28
+
+# Next bin is 55, so remove 28
+mstrim <- mstrim[-(x-28+1):-x,] # Remove 28 rows
+#nrow(mstrim) = 4472
+x <- x-55
+
+# Next bin is 51, so remove 26
+mstrim <- mstrim[-(x-26+1):-x,] # Remove 26 rows
+#nrow(mstrim) = 4446
+x <- x-51
+
+# Next bin is 63, so remove 32
+mstrim <- mstrim[-(x-32+1):-x,] # Remove 32 rows
+#nrow(mstrim) = 4414
+x <- x-63
+
+# Next bin is 75, so remove 38
+mstrim <- mstrim[-(x-38+1):-x,] # Remove 38 rows
+#nrow(mstrim) = 4376
+x <- x-75
+
+# Next bin is 86, so remove 43
+mstrim <- mstrim[-(x-43+1):-x,] # Remove 43 rows
+#nrow(mstrim) = 4333
+x <- x-86
+
+# Next bin is 134, so remove 67
+mstrim <- mstrim[-(x-67+1):-x,] # Remove 67 rows
+#nrow(mstrim) = 4266
+x <- x-134
+
+# Next bin is 161, so remove 81
+mstrim <- mstrim[-(x-81+1):-x,] # Remove 81 rows
+#nrow(mstrim) = 4185
+x <- x-161
+
+# Next bin is 148, so remove 74
+mstrim <- mstrim[-(x-74+1):-x,] # Remove 74 rows
+#nrow(mstrim) = 4111
+x <- x-148
+
+# Next bin is 210, so remove 105
+mstrim <- mstrim[-(x-105+1):-x,] # Remove 105 rows
+#nrow(mstrim) = 4006
+x <- x-210
+
+# Next bin is 226, so remove 113
+mstrim <- mstrim[-(x-113+1):-x,] # Remove 113 rows
+#nrow(mstrim) = 3893
+x <- x-226
+
+# Next bin is 242, so remove 121
+mstrim <- mstrim[-(x-121+1):-x,] # Remove 121 rows
+#nrow(mstrim) = 3772
+x <- x-242
+
+# Next bin is 363, so remove 182
+mstrim <- mstrim[-(x-182+1):-x,] # Remove 182 rows
+#nrow(mstrim) = 3590
+x <- x-363
+
+# Next bin is 554, so remove 277
+mstrim <- mstrim[-(x-277+1):-x,] # Remove 277 rows
+#nrow(mstrim) = 3313
+x <- x-554
+
+# Next bin is 650, so remove 325
+mstrim <- mstrim[-(x-325+1):-x,] # Remove 325 rows
+#nrow(mstrim) = 2988
+x <- x-650
+
+# Next bin is 704, so remove 352
+mstrim <- mstrim[-(x-352+1):-x,] # Remove 352 rows
+#nrow(mstrim) = 2636
+x <- x-704
+
+# Next bin is 651, so remove 326
+mstrim <- mstrim[-(x-326+1):-x,] # Remove 326 rows
+#nrow(mstrim) = 2310
+x <- x-651
+
+
+### Start with Mussel End
+# Largest bin is 40, so remove 27
+x <- nrow(metrim)
+#nrow(metrim) = 6217
+metrim <- metrim[-(x-27+1):-x,] # Remove 27 rows
+#nrow(metrim) = 6190
+x <- x-40
+
+# Next bin is 5, so remove 3
+metrim <- metrim[-(x-3+1):-x,] # Remove 3 rows
+#nrow(metrim) = 6187
+x <- x-5
+
+# Next bin is 8, so remove 5
+metrim <- metrim[-(x-5+1):-x,] # Remove 5 rows
+#nrow(metrim) = 6182
+x <- x-8
+
+# Next bin is 47, so remove 31.2
+metrim <- metrim[-(x-31.2+1):-x,] # Remove 31.2 rows
+#nrow(metrim) = 6151
+x <- x-47
+
+# Next bin is 11, so remove 7.2
+metrim <- metrim[-(x-7.2+1):-x,] # Remove 7.2 rows
+#nrow(metrim) = 6144
+x <- x-11
+
+# Next bin is 42, so remove 28
+metrim <- metrim[-(x-28+1):-x,] # Remove 28 rows
+#nrow(metrim) = 6116
+x <- x-42
+
+# Next bin is 19, so remove 13
+metrim <- metrim[-(x-13+1):-x,] # Remove 13 rows
+#nrow(metrim) = 6103
+x <- x-19
+
+# Next bin is 14, so remove 9
+metrim <- metrim[-(x-9+1):-x,] # Remove 9 rows
+#nrow(metrim) = 6094
+x <- x-14
+
+# Next bin is 24, so remove 16
+metrim <- metrim[-(x-16+1):-x,] # Remove 16 rows
+#nrow(metrim) = 6078
+x <- x-24
+
+# Next bin is 31, so remove 21
+metrim <- metrim[-(x-21+1):-x,] # Remove 21 rows
+#nrow(metrim) = 6057
+x <- x-31
+
+# Next bin is 39, so remove 26
+metrim <- metrim[-(x-26+1):-x,] # Remove 26 rows
+#nrow(metrim) = 6031
+x <- x-39
+
+# Next bin is 35, so remove 23
+metrim <- metrim[-(x-23+1):-x,] # Remove 23 rows
+#nrow(metrim) = 6008
+x <- x-35
+
+# Next bin is 46, so remove 31
+metrim <- metrim[-(x-31+1):-x,] # Remove 31 rows
+#nrow(metrim) = 5977
+x <- x-46
+
+# Next bin is 49, so remove 33
+metrim <- metrim[-(x-33+1):-x,] # Remove 33 rows
+#nrow(metrim) = 5944
+x <- x-49
+
+# Next bin is 48, so remove 32
+metrim <- metrim[-(x-32+1):-x,] # Remove 32 rows
+#nrow(metrim) = 5912
+x <- x-48
+
+# Next bin is 78, so remove 52
+metrim <- metrim[-(x-52+1):-x,] # Remove 52 rows
+#nrow(metrim) = 5860
+x <- x-78
+
+# Next bin is 82, so remove 55
+metrim <- metrim[-(x-55+1):-x,] # Remove 55 rows
+#nrow(metrim) = 6011
+x <- x-82
+
+# Next bin is 83, so remove 55
+metrim <- metrim[-(x-55+1):-x,] # Remove 55 rows
+#nrow(metrim) = 5805
+x <- x-83
+
+# Next bin is 101, so remove 67
+metrim <- metrim[-(x-67+1):-x,] # Remove 67 rows
+#nrow(metrim) = 5738
+x <- x-101
+
+# Next bin is 136, so remove 91
+metrim <- metrim[-(x-91+1):-x,] # Remove 91 rows
+#nrow(metrim) = 5647
+x <- x-136
+
+# Next bin is 166, so remove 111
+metrim <- metrim[-(x-111+1):-x,] # Remove 111 rows
+#nrow(metrim) = 5536
+x <- x-166
+
+# Next bin is 197, so remove 131
+metrim <- metrim[-(x-131+1):-x,] # Remove 131 rows
+#nrow(metrim) = 5405
+x <- x-197
+
+# Next bin is 240, so remove 160
+metrim <- metrim[-(x-160+1):-x,] # Remove 160 rows
+#nrow(metrim) = 5245
+x <- x-240
+
+# Next bin is 300, so remove 200
+metrim <- metrim[-(x-200+1):-x,] # Remove 200 rows
+#nrow(metrim) = 5045
+x <- x-300
+
+# Next bin is 391, so remove 261
+metrim <- metrim[-(x-261+1):-x,] # Remove 261 rows
+#nrow(metrim) = 4784
+x <- x-391
+
+# Next bin is 478, so remove 319
+metrim <- metrim[-(x-319+1):-x,] # Remove 319 rows
+#nrow(metrim) = 4465
+x <- x-478
+
+# Next bin is 626, so remove 417
+metrim <- metrim[-(x-417+1):-x,] # Remove 417 rows
+#nrow(metrim) = 4048
+x <- x-626
+
+# Next bin is 682, so remove 455
+metrim <- metrim[-(x-455+1):-x,] # Remove 455 rows
+#nrow(metrim) = 3593
+x <- x-682
+
+# Next bin is 720, so remove 480
+metrim <- metrim[-(x-480+1):-x,] # Remove 480 rows
+#nrow(metrim) = 3113
+x <- x-720
+
+# Next bin is 751, so remove 501
+metrim <- metrim[-(x-501+1):-x,] # Remove 501 rows
+#nrow(metrim) = 2612
+x <- x-751
+
+# Next bin is 728, so remove 485
+metrim <- metrim[-(x-485+1):-x,] # Remove 485 rows
+#nrow(metrim) = 2127
+x <- x-728
+
+
+#### Make updated fully scaled Size dataframe
+new.scale <- rbind(cstrim, cetrim)
+new.scale <- rbind(new.scale, mstrim)
+new.scale <- rbind(new.scale, metrim)
+
+
+#ggplot(data=Size, aes(x=Area, fill=Treatment)) + geom_density(alpha=0.3) + facet_grid(.~Time) + scale_x_log10()
+    # Density Plot
+
+## Scaled Experiment Histogram
+# 
+# print("Black lines represents median of each treatment", quote=F)
+# ggplot(data=new.scale, aes(x=AreaScale, fill=Treatment)) + geom_histogram() +
+#   facet_grid(Treatment~Time) + ggtitle("Treatment Cell Size") +
+#   geom_vline(aes(xintercept=Median), scalmedtt)
+
+
+
+
+
+#plot_grid(skeworig, skewscale, ncol = 2, nrow = 1)
+#http://www.sthda.com/english/wiki/ggplot2-easy-way-to-mix-multiple-graphs-on-the-same-page-r-software-and-data-visualization#grid.arrange-create-and-arrange-multiple-plots
+
+#grid.arrange(skeworig, skewscale, ncol=2)
+
+
+expskeworig <- ggplot(data=Size, aes(x=AreaTrans, fill=Treatment)) + geom_histogram() +
+  facet_grid(Treatment~Time) + ggtitle("Treatment Cell Size") +
+  geom_vline(aes(xintercept=Median), medtt) + xlab("Area")
+expskewscale <- ggplot(data=new.scale, aes(x=AreaScale, fill=Treatment)) + geom_histogram() +
+  facet_grid(Treatment~Time) + ggtitle("Scaled Treatment Cell Size") + xlab("Scaled Area") +
+  geom_vline(aes(xintercept=Median), scalmedtt)
+multiplot(expskeworig, expskewscale, cols=2)
+
+# explogorig <- ggplot(data=Size, aes(x=Area, fill=Treatment)) + geom_histogram() +
+#   facet_grid(Treatment~Time) + scale_x_log10() + ggtitle("Treatment Cell Size (Log Scale)") +
+#   geom_vline(aes(xintercept=Median), medtt) + xlab("Area")
+# explogscale <- ggplot(data=new.scale, aes(x=AreaScale, fill=Treatment)) + geom_histogram() +
+#   facet_grid(Treatment~Time) + scale_x_log10() + ggtitle("Scaled Treatment Cell Size (Log Scale)") +
+#   geom_vline(aes(xintercept=Median), medtt) + xlab("Area")
+# multiplot(explogorig, explogscale, cols=2)
+
+
+
+
+```
+  
+  
+## Levene's Test of Equality of Variances
+```{r levene}
+levene.test(y=Size$Area, group=Size$Experiment)
+print("Sample variances are significantly different")
+
+levene.test(y=new.scale$Area, group=new.scale$Experiment)
+print("Scaled sample variances are significantly different")
+
+levene.test(y=new.scale$AreaLog, group=new.scale$Experiment)
+print("Scaled logged sample variances are significantly different")
+
+levene.test(y=new.scale$Area, group=new.scale$Treatment)
+print("Scaled variances in Control and Mussel are significantly different")
+
+levene.test(y=new.scale$Area, group=new.scale$Time)
+print("Scaled variances in Start and End are significantly different")
+
+# levene.test(y=new.scale$Area, group=new.scale$Experiment %in% c("Control Start", "Control End"))
+# levene.test(y=new.scale$Area, group=new.scale$Experiment %in% c("Mussel Start", "Mussel End"))
+# levene.test(y=new.scale$Area, group=new.scale$Experiment %in% c("Control Start", "Mussel Start"))
+# levene.test(y=new.scale$Area, group=new.scale$Experiment %in% c("Control End", "Mussel End"))
+# print("Scaled variances are significantly different between Control and Mussel, but not significantly different within Control and Mussel")
+
+
+#sd(Size$Area[controlstart])
+#sd(Size$Area[controlend])
+#sd(Size$Area[musselstart])
+#sd(Size$Area[musselend])
+
+#sd(Size$AreaLog[controlstart])
+#sd(Size$AreaLog[controlend])
+#sd(Size$AreaLog[musselstart])
+#sd(Size$AreaLog[musselend])
+
+
+
+```
+
+
+## Wilcoxon-Mann-Whitney Test
+
+##### UNRELIABLE BECAUSE VARIANCES ARE SIGNIFICANTLY DIFFERENT #####
+
+
+**Control Start vs. Mussel Start**
+```{r tstarts}
+wilcox.test(x=Size$Area[Size$Experiment=="Control Start"], y=Size$Area[Size$Experiment=="Mussel Start"], alternative = "less")
+
+wilcox.test(x=new.scale$Area[new.scale$Experiment=="Control Start"],
+            y=new.scale$Area[new.scale$Experiment=="Mussel Start"], alternative = "less")
+
+print("Control Start is significantly smaller than Mussel Start", quote=F)
+
+```
+
+
+**Control End vs. Mussel End**
+```{r tends, echo=FALSE}
+wilcox.test(x=Size$AreaLog[controlend], y=Size$AreaLog[musselend], alternative="greater")
+
+#wilcox.test(x=new.scale$Area[new.scale$Experiment=="Control End"],
+#            y=new.scale$Area[new.scale$Experiment=="Mussel End"], alternative="greater")
+
+print("Control End is significantly larger than Mussel End", quote=F)
+```
+
+
+**Control Start vs. Control End**
+```{r tcontrols, echo=FALSE}
+wilcox.test(x=Size$Area[controlstart], y=Size$Area[controlend], alternative="less")
+
+#wilcox.test(x=new.scale$Area[new.scale$Experiment=="Control Start"],
+#            y=new.scale$Area[new.scale$Experiment=="Control End"], alternative = "less")
+
+print("Control Start is significantly smaller than Control End", quote=F)
+```
+
+
+**Mussel Start vs. Mussel End**
+```{r tmussels, echo=FALSE}
+wilcox.test(x=Size$AreaLog[musselstart], y=Size$AreaLog[musselend])
+
+#wilcox.test(x=new.scale$Area[new.scale$Experiment=="Mussel Start"],
+#            y=new.scale$Area[new.scale$Experiment=="Mussel End"])
+
+print("There is no significant difference between Mussel Start & Mussel End", quote=F)
+```
+  
+  
+  
+  
+## Kruskal-Wallis Test
+
+```{r kruskal}
+### https://statistics.laerd.com/spss-tutorials/kruskal-wallis-h-test-using-spss-statistics.php
+
+#kruskal.test(x=Size$Area, g=Size$Experiment)
+#kruskal.test(x=Size$AreaLog, g=Size$Experiment)
+
+#kruskal.test(x=Size$Area, g=Size$Treatment)
+#kruskal.test(x=Size$AreaLog, g=Size$Treatment)
+
+#kruskal.test(x=Size$Area, g=Size$Time)
+#kruskal.test(x=Size$AreaLog, g=Size$Time)
+
+kruskal.test(formula=Area ~ Experiment, data=Size, subset=Size$Experiment=="Control Start"|Size$Experiment=="Control End")
+print("Control Start and Control End cell sizes are significantly different")
+
+kruskal.test(formula=Area ~ Experiment, data=Size, subset=Size$Experiment=="Mussel Start"|Size$Experiment=="Mussel End")
+print("Mussel Start and Mussel End cell sizes are not significantly different")
+
+kruskal.test(formula=Area ~ Experiment, data=Size, subset=Size$Experiment=="Control Start"|Size$Experiment=="Mussel Start")
+print("Control Start and Mussel Start cell sizes are significantly different")
+
+kruskal.test(formula=Area ~ Experiment, data=Size, subset=Size$Experiment=="Control End"|Size$Experiment=="Mussel End")
+print("Control End and Mussel End cell sizes are significantly different")
+
+```
+
+
+
+
+
+  
+  
+## Discussion    
+**ImageJ Bias**  
+ImageJ is unable to distinguish between single cells, paired cells, & clusters of cells. Many of the extremely large measurements are likely due to clustered cells, as well as other measurements that fall throughout the distribution. I was unable to remove these large measurements because the DAPI samples represent the 0.22 - 153 um fraction. Although the largest cell size measurement (22.6 um) was well below the 153 um threshold, there is still a possibility that these large measurements are not due to ImageJ bias.    
+
+**Cell Number**  
+Cell number did not significantly change from Control Start to Control End; however, it did significantly decrease from Mussel Start to Mussel End. This change could be due to mussel predation.    
+
+**Cell Size**  
+Within the Control experiments, Start was significantly smaller than End. Within the Mussel Experiments, there was no significant change in cell size. When comparing the Start of the experiments, Control was significantly smaller than Mussel. However, at the end, Control was significantly larger than Mussel. This may suggest that mussels control bacterial cell size through predation, and when bacteria are allowed to grow in the absence of these predators, they are grow to much larger sizes.
+  
+
+
