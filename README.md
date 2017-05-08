@@ -4,15 +4,15 @@
 Under review
 
 **********
-This is the repository for the manuscript "Lake bacterial assemblage composition is sensitive to biological disturbance caused by an invasive filter feeder." written by Vincent J. Denef, Hunter J. Carrick, Joann Cavaletto, Edna Chiang, Thomas H. Johengen, and Henry A. Vanderploeg. The raw data can be obtained from the Sequence Read Archive at NCBI under accession SRPXXX, which are associated with BioProject PRJNAXXXX 
+This is the repository for the manuscript "Lake bacterial assemblage composition is sensitive to biological disturbance caused by an invasive filter feeder." written by Vincent J. Denef, Hunter J. Carrick, Joann Cavaletto, Edna Chiang, Thomas H. Johengen, and Henry A. Vanderploeg. The raw data can be obtained from the Sequence Read Archive at NCBI under BioProject PRJNA385848 
 **********
 
-####Information about this repository:  
+#### Information about this repository:  
 
 
 ##### **Original fastq files:**
 
-The original Fastq files were submitted to the NCBI sequence read archive under BioProject PRJNAXXXXXX, SRA accession number SRPXXXXXX
+The original Fastq files were submitted to the NCBI sequence read archive under BioProject PRJNA385848
 
 
 ##### **Code Files:**
